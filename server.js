@@ -15,7 +15,7 @@ const pool = new Pool({
   max: 2
 });
 
-// ---------------- MEMORY FUNCTIONS ----------------
+// ---------------- MEMORY ----------------
 async function getHistory(userId) {
   const res = await pool.query(
     `SELECT role, content
@@ -25,7 +25,6 @@ async function getHistory(userId) {
      LIMIT 10`,
     [userId]
   );
-
   return res.rows.reverse();
 }
 
@@ -46,49 +45,94 @@ async function askAI(userId, text) {
       role: "system",
       content: `
 You are Vayu.
-
 Talk like a real human on WhatsApp.
-- SAME language as user
+- Same language as user
 - Hinglish/Benglish allowed
 - Short, natural, casual
-- REMEMBER previous messages
-- Reply like ChatGPT, not a bot
+- Use previous conversation context
 `
     },
     ...history,
     { role: "user", content: text }
   ];
 
-  const res = await axios.post(
-    "https://api.groq.com/openai/v1/chat/completions",
-    {
-      model: "llama-3.1-70b-versatile",
-      messages,
-      temperature: 0.9,
-      max_tokens: 400
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${process.env.GROQ_API_KEY}`
+  try {
+    const res = await axios.post(
+      "https://api.groq.com/openai/v1/chat/completions",
+      {
+        model: "llama-3.3-70b-specdec",
+        messages,
+        temperature: 0.9,
+        max_tokens: 400
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.GROQ_API_KEY}`
+        }
       }
-    }
-  );
+    );
 
-  const reply = res.data.choices[0].message.content;
+    const reply = res.data.choices[0].message.content;
 
-  // Save conversation
-  await saveMessage(userId, "user", text);
-  await saveMessage(userId, "assistant", reply);
+    await saveMessage(userId, "user", text);
+    await saveMessage(userId, "assistant", reply);
 
-  return reply;
+    return reply;
+
+  } catch (err) {
+    console.log("AI ERROR:", err.response?.data || err.message);
+    return "bol na, sun raha hoon 🙂";
+  }
 }
 
+// ---------------- CREATE INSTANCE (QR) ----------------
+app.post('/create-instance', async (req, res) => {
+  const { userId } = req.body;
+
+  const instanceName = `vayu_${userId}_${Date.now()}`;
+  const expiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
+  try {
+    const evo = await axios.post(
+      `${process.env.EVO_URL}/instance/create`,
+      {
+        instanceName,
+        integration: "WHATSAPP-BAILEYS",
+        qrcode: true
+      },
+      {
+        headers: { apikey: process.env.EVO_API_KEY }
+      }
+    );
+
+    await pool.query(
+      `INSERT INTO instances (id, instance_name, status, expires_at)
+       VALUES ($1,$2,$3,$4)
+       ON CONFLICT (id)
+       DO UPDATE SET instance_name=$2, expires_at=$4`,
+      [userId, instanceName, 'active', expiry]
+    );
+
+    res.json({
+      success: true,
+      instance: instanceName,
+      qr: evo.data?.qrcode?.base64,
+      expires: expiry
+    });
+
+  } catch (err) {
+    console.error("CREATE ERROR:", err.response?.data || err.message);
+    res.status(500).json({ error: "Instance failed" });
+  }
+});
+
 // ---------------- WEBHOOK ----------------
+const processed = new Set();
+
 app.post('/webhook', async (req, res) => {
   try {
     const body = req.body;
 
-    // ONLY real messages
     if (body.event !== "messages.upsert") {
       return res.sendStatus(200);
     }
@@ -99,8 +143,13 @@ app.post('/webhook', async (req, res) => {
       return res.sendStatus(200);
     }
 
+    const msgId = msg.key.id;
+    if (processed.has(msgId)) return res.sendStatus(200);
+    processed.add(msgId);
+    setTimeout(() => processed.delete(msgId), 60000);
+
     const sender = msg.key.remoteJid;
-    const number = sender.split('@')[0];
+    const number = sender.replace(/[^0-9]/g, "");
 
     let text =
       msg.message.conversation ||
@@ -114,9 +163,8 @@ app.post('/webhook', async (req, res) => {
 
     const reply = await askAI(number, text);
 
-    console.log("AI:", reply);
+    console.log("REPLY:", reply);
 
-    // small human delay
     await new Promise(r => setTimeout(r, 700));
 
     await axios.post(
@@ -131,11 +179,14 @@ app.post('/webhook', async (req, res) => {
     );
 
   } catch (err) {
-    console.error("ERROR:", err.message);
+    console.error("WEBHOOK ERROR:", err.response?.data || err.message);
   }
 
   res.sendStatus(200);
 });
+
+// ---------------- HEALTH ----------------
+app.get('/', (req, res) => res.send("VAYU LIVE"));
 
 // ---------------- START ----------------
 app.listen(process.env.PORT || 3000, () => {
