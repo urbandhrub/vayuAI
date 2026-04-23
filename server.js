@@ -54,7 +54,6 @@ Talk like a real human on WhatsApp.
     ...history,
     { role: "user", content: text }
   ];
-
   try {
     const res = await axios.post(
       "https://api.groq.com/openai/v1/chat/completions",
@@ -80,7 +79,7 @@ Talk like a real human on WhatsApp.
   }
 }
 
-// ---------------- CREATE INSTANCE (Final Fixed) ----------------
+// ---------------- CREATE INSTANCE (Final Fixed with QR Polling) ----------------
 app.post('/create-instance', async (req, res) => {
   const { userId } = req.body;
   const instanceName = `vayu_${userId}_${Date.now()}`;
@@ -112,10 +111,23 @@ app.post('/create-instance', async (req, res) => {
       [userId, instanceName, 'active', expiry]
     );
 
-    // Final QR Extraction
-    const qrBase64 = evo.data?.qrcode?.base64 || 
-                     evo.data?.qrCode?.base64 || 
-                     evo.data?.qr?.base64 || null;
+    // === FINAL QR FIX - Polling ===
+    let qrBase64 = null;
+    for (let i = 0; i < 12; i++) {
+      await new Promise(r => setTimeout(r, 800));
+
+      const instancesRes = await axios.get(
+        `${process.env.EVO_URL}/instance/fetchInstances`,
+        { headers: { apikey: process.env.EVO_API_KEY } }
+      );
+
+      const currentInst = instancesRes.data.find(inst => inst.instanceName === instanceName);
+      if (currentInst?.qrcode?.base64) {
+        qrBase64 = currentInst.qrcode.base64;
+        console.log("✅ QR FOUND SUCCESSFULLY!");
+        break;
+      }
+    }
 
     res.json({
       success: true,
@@ -126,64 +138,51 @@ app.post('/create-instance', async (req, res) => {
 
   } catch (err) {
     console.error("❌ CREATE ERROR:", err.response?.data || err.message);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: "Instance failed",
-      details: err.response?.data?.message || err.message 
+      details: err.response?.data?.message || err.message
     });
   }
 });
 
 // ---------------- WEBHOOK ----------------
 const processed = new Set();
-
 app.post('/webhook', async (req, res) => {
   try {
     const body = req.body;
-
     // Log QR updates
     if (body.event === "qrcode.updated") {
       console.log(`📱 QR Updated → ${body.instance}`);
     }
-
     if (body.event !== "messages.upsert") {
       return res.sendStatus(200);
     }
-
     const msg = Array.isArray(body.data) ? body.data[0] : body.data;
     if (!msg?.message || msg.key.fromMe) {
       return res.sendStatus(200);
     }
-
     const msgId = msg.key.id;
     if (processed.has(msgId)) return res.sendStatus(200);
     processed.add(msgId);
     setTimeout(() => processed.delete(msgId), 60000);
-
     const sender = msg.key.remoteJid;
     const number = sender.replace(/[^0-9]/g, "");
     let text = msg.message.conversation || msg.message.extendedTextMessage?.text;
-
     if (!text) return res.sendStatus(200);
     text = text.trim();
-
     console.log("USER:", number, text);
-
     const reply = await askAI(number, text);
     console.log("REPLY:", reply);
-
     await new Promise(r => setTimeout(r, 700));
-
     await axios.post(
       `${process.env.EVO_URL}/message/sendText/${body.instance}`,
       { number, text: reply },
       { headers: { apikey: process.env.EVO_API_KEY } }
     );
-
   } catch (err) {
     console.error("WEBHOOK ERROR:", err.response?.data || err.message);
   }
-
   res.sendStatus(200);
 });
 
