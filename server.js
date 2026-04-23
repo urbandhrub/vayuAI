@@ -15,22 +15,22 @@ const pool = new Pool({
   max: 2
 });
 
-// ---------------- MEMORY (FIRST MESSAGE TRACK) ----------------
+// ---------------- MEMORY ----------------
 const greetedUsers = new Set();
 
-// ---------------- AI ----------------
+// ---------------- AI (GROQ ONLY) ----------------
 async function askAI(text) {
   const systemPrompt = `
 You are Vayu.
 
-Talk like a real person on WhatsApp.
-- Reply in same language
-- Keep it casual, natural, short
-- No robotic tone
-- No unnecessary suggestions
+Talk like a real human on WhatsApp.
+- Reply in SAME language as user
+- If Hinglish/Benglish → reply same style
+- Short, casual, natural
+- No assistant tone
+- No "how can I help you"
 `;
 
-  // -------- GROQ --------
   try {
     const res = await axios.post(
       "https://api.groq.com/openai/v1/chat/completions",
@@ -40,52 +40,34 @@ Talk like a real person on WhatsApp.
           { role: "system", content: systemPrompt },
           { role: "user", content: text }
         ],
-        temperature: 0.8
+        temperature: 0.8,
+        max_tokens: 200
       },
       {
         headers: {
-          Authorization: `Bearer ${process.env.GROQ_API_KEY}`
+          Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+          "Content-Type": "application/json"
         },
         timeout: 8000
       }
     );
 
     const reply = res.data?.choices?.[0]?.message?.content;
-    if (reply) return reply;
 
-    throw new Error("Empty Groq");
+    if (!reply) throw new Error("Empty response");
 
-  } catch (err) {
-    console.log("Groq failed");
-  }
-
-  // -------- GEMINI --------
-  try {
-    const res = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
-      {
-        contents: [
-          {
-            parts: [
-              { text: `${systemPrompt}\n\nUser: ${text}` }
-            ]
-          }
-        ]
-      }
-    );
-
-    const reply =
-      res.data?.candidates?.[0]?.content?.parts?.[0]?.text;
-
-    if (reply) return reply;
-
-    throw new Error("Empty Gemini");
+    console.log("AI:", reply);
+    return reply;
 
   } catch (err) {
-    console.log("Gemini failed");
-  }
+    console.log("GROQ ERROR:", err.response?.data || err.message);
 
-  return "Got your message 👍";
+    // 🔥 SMART FALLBACK (still human)
+    if (/hi|hello|hey/i.test(text)) return "Hey 🙂";
+    if (/kya|hai|kar/i.test(text)) return "haan bol, kya scene hai?";
+    if (/ki|koro|tumi/i.test(text)) return "bolo, ki lagbe?";
+    return "bol na, sun raha hoon 🙂";
+  }
 }
 
 // ---------------- CREATE INSTANCE ----------------
@@ -156,7 +138,7 @@ app.post('/webhook', async (req, res) => {
 
     const number = sender.split('@')[0];
 
-    // -------- DB CHECK --------
+    // ---------------- DB CHECK ----------------
     let valid = false;
 
     try {
@@ -178,20 +160,19 @@ app.post('/webhook', async (req, res) => {
     if (!valid) {
       reply = "Trial expired.";
     } else {
-      // -------- FIRST MESSAGE INTRO --------
+      // FIRST MESSAGE INTRO
       if (!greetedUsers.has(number)) {
         greetedUsers.add(number);
 
-        reply = "Hi, I’m Dhrub’s avatar. He’ll get back to you shortly — you can tell me anything 🙂";
+        reply = "Hi, I’m Dhrub’s avatar. He’ll get back shortly — you can tell me anything 🙂";
       } else {
-        // -------- AI CHAT --------
         reply = await askAI(text);
       }
     }
 
     console.log("REPLY:", reply);
 
-    // -------- SEND MESSAGE --------
+    // ---------------- SEND MESSAGE ----------------
     await axios.post(
       `${process.env.EVO_URL}/message/sendText/${body.instance}`,
       {
