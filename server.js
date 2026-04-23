@@ -15,7 +15,7 @@ const pool = new Pool({
   max: 2
 });
 
-// 🔥 ADDED: QR STORE (no existing code touched)
+// ---------------- QR STORE (ADDED EARLIER, KEEP) ----------------
 const qrStore = new Map();
 
 // ---------------- MEMORY ----------------
@@ -63,7 +63,7 @@ Talk like a real human on WhatsApp.
     const res = await axios.post(
       "https://api.groq.com/openai/v1/chat/completions",
       {
-        model: "llama-3.3-70b-versatile", // unchanged (your choice)
+        model: "llama-3.3-70b-versatile",
         messages,
         temperature: 0.9,
         max_tokens: 400
@@ -88,7 +88,7 @@ Talk like a real human on WhatsApp.
   }
 }
 
-// ---------------- CREATE INSTANCE (ADDED WEBHOOK QR READ, NOTHING REMOVED) ----------------
+// ---------------- CREATE INSTANCE ----------------
 app.post('/create-instance', async (req, res) => {
   const { userId } = req.body;
 
@@ -116,16 +116,15 @@ app.post('/create-instance', async (req, res) => {
       [userId, instanceName, 'active', expiry]
     );
 
-    // 🔥 EXISTING VARIABLE KEPT
     let qrBase64 = evo.data?.qrcode?.base64 || null;
 
-    // 🔥 ADDED: WAIT FOR WEBHOOK QR (does not remove your logic)
+    // WAIT FOR WEBHOOK QR
     for (let i = 0; i < 25 && !qrBase64; i++) {
       await new Promise(r => setTimeout(r, 1000));
 
       if (qrStore.has(instanceName)) {
         qrBase64 = qrStore.get(instanceName);
-        console.log("✅ QR FROM WEBHOOK");
+        console.log("✅ QR FROM STORE");
         break;
       }
     }
@@ -143,14 +142,14 @@ app.post('/create-instance', async (req, res) => {
   }
 });
 
-// ---------------- WEBHOOK ----------------
+// ---------------- WEBHOOK (EXISTING - UNCHANGED) ----------------
 const processed = new Set();
 
 app.post('/webhook', async (req, res) => {
   try {
     const body = req.body;
 
-    // 🔥 ADDED: QR CAPTURE (no existing logic removed)
+    // QR capture here ALSO (keep it)
     if (body.event === "qrcode.updated") {
       const instance = body.instance;
 
@@ -208,6 +207,32 @@ app.post('/webhook', async (req, res) => {
 
   res.sendStatus(200);
 });
+
+
+// =====================
+// 🔥 ONLY NEW ADDITION
+// =====================
+app.post('/webhook/qrcode-updated', (req, res) => {
+  const body = req.body;
+
+  if (body.event === "qrcode.updated") {
+    const instance = body.instance;
+
+    const qr =
+      body.data?.qrcode?.base64 ||
+      body.data?.qrcode ||
+      null;
+
+    if (qr) {
+      qrStore.set(instance, qr);
+      console.log("✅ QR RECEIVED (ALT ROUTE):", instance);
+    }
+  }
+
+  res.sendStatus(200);
+});
+// =====================
+
 
 // ---------------- HEALTH ----------------
 app.get('/', (req, res) => res.send("VAYU LIVE"));
