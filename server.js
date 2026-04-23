@@ -6,63 +6,47 @@ const cors = require('cors');
 const app = express();
 app.use(express.json());
 app.use(cors());
+
 // ---------------- DATABASE ----------------
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
   max: 2
 });
+
 // ---------------- MEMORY ----------------
 async function getHistory(userId) {
   const res = await pool.query(
-    `SELECT role, content
-     FROM chat_history
-     WHERE user_id = $1
-     ORDER BY created_at DESC
-     LIMIT 10`,
+    `SELECT role, content FROM chat_history WHERE user_id = $1 ORDER BY created_at DESC LIMIT 10`,
     [userId]
   );
   return res.rows.reverse();
 }
+
 async function saveMessage(userId, role, content) {
   await pool.query(
-    `INSERT INTO chat_history (user_id, role, content)
-     VALUES ($1, $2, $3)`,
+    `INSERT INTO chat_history (user_id, role, content) VALUES ($1, $2, $3)`,
     [userId, role, content]
   );
 }
+
 // ---------------- AI ----------------
 async function askAI(userId, text) {
   const history = await getHistory(userId);
   const messages = [
     {
       role: "system",
-      content: `
-You are Vayu.
-Talk like a real human on WhatsApp.
-- Same language as user
-- Hinglish/Benglish allowed
-- Short, natural, casual
-- Use previous conversation context
-`
+      content: `You are Vayu. Talk like a real human on WhatsApp. - Same language as user - Hinglish/Benglish allowed - Short, natural, casual - Use previous conversation context`
     },
     ...history,
     { role: "user", content: text }
   ];
+
   try {
     const res = await axios.post(
       "https://api.groq.com/openai/v1/chat/completions",
-      {
-        model: "llama-3.3-70b-versatile",   // ← Fixed Here (was decommissioned)
-        messages,
-        temperature: 0.9,
-        max_tokens: 400
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.GROQ_API_KEY}`
-        }
-      }
+      { model: "llama-3.3-70b-versatile", messages, temperature: 0.9, max_tokens: 400 },
+      { headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` } }
     );
     const reply = res.data.choices[0].message.content;
     await saveMessage(userId, "user", text);
@@ -73,12 +57,16 @@ Talk like a real human on WhatsApp.
     return "bol na, sun raha hoon 🙂";
   }
 }
-// ---------------- CREATE INSTANCE (QR) ----------------
+
+// ---------------- CREATE INSTANCE (Improved QR) ----------------
 app.post('/create-instance', async (req, res) => {
   const { userId } = req.body;
   const instanceName = `vayu_${userId}_${Date.now()}`;
   const expiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
   try {
+    console.log(`🔄 Creating instance: ${instanceName}`);
+
     const evo = await axios.post(
       `${process.env.EVO_URL}/instance/create`,
       {
@@ -86,73 +74,91 @@ app.post('/create-instance', async (req, res) => {
         integration: "WHATSAPP-BAILEYS",
         qrcode: true
       },
-      {
-        headers: { apikey: process.env.EVO_API_KEY }
-      }
+      { headers: { apikey: process.env.EVO_API_KEY } }
     );
+
+    console.log("📥 Create Response:", JSON.stringify(evo.data, null, 2));
+
+    // Save to DB
     await pool.query(
       `INSERT INTO instances (id, instance_name, status, expires_at)
-       VALUES ($1,$2,$3,$4)
-       ON CONFLICT (id)
-       DO UPDATE SET instance_name=$2, expires_at=$4`,
+       VALUES ($1,$2,$3,$4) ON CONFLICT (id) DO UPDATE SET instance_name=$2, expires_at=$4`,
       [userId, instanceName, 'active', expiry]
     );
+
+    // Try to extract QR from immediate response
+    let qrBase64 = evo.data?.qrcode?.base64 || 
+                   evo.data?.qrCode?.base64 || 
+                   evo.data?.qr?.base64;
+
     res.json({
       success: true,
       instance: instanceName,
-      qr: evo.data?.qrcode?.base64,
-      expires: expiry
+      qr: qrBase64,
+      expires: expiry,
+      note: qrBase64 ? "QR ready" : "Check webhook for qrcode.updated (most cases)"
     });
+
   } catch (err) {
-    console.error("CREATE ERROR:", err.response?.data || err.message);
-    res.status(500).json({ error: "Instance failed" });
+    console.error("❌ CREATE ERROR:", err.response?.data || err.message);
+    res.status(500).json({ 
+      success: false, 
+      error: "Instance creation failed", 
+      details: err.response?.data?.message || err.message 
+    });
   }
 });
-// ---------------- WEBHOOK ----------------
+
+// ---------------- WEBHOOK (Already good) ----------------
 const processed = new Set();
 app.post('/webhook', async (req, res) => {
   try {
     const body = req.body;
+    if (body.event === "qrcode.updated") {
+      console.log(`📱 QR Updated for ${body.instance}`);
+      // Here you can save QR to DB if needed for frontend polling
+    }
+
     if (body.event !== "messages.upsert") {
       return res.sendStatus(200);
     }
+
     const msg = Array.isArray(body.data) ? body.data[0] : body.data;
-    if (!msg?.message || msg.key.fromMe) {
-      return res.sendStatus(200);
-    }
+    if (!msg?.message || msg.key.fromMe) return res.sendStatus(200);
+
     const msgId = msg.key.id;
     if (processed.has(msgId)) return res.sendStatus(200);
     processed.add(msgId);
     setTimeout(() => processed.delete(msgId), 60000);
+
     const sender = msg.key.remoteJid;
     const number = sender.replace(/[^0-9]/g, "");
-    let text =
-      msg.message.conversation ||
-      msg.message.extendedTextMessage?.text;
+    let text = msg.message.conversation || msg.message.extendedTextMessage?.text;
     if (!text) return res.sendStatus(200);
+
     text = text.trim();
     console.log("USER:", number, text);
+
     const reply = await askAI(number, text);
     console.log("REPLY:", reply);
+
     await new Promise(r => setTimeout(r, 700));
+
     await axios.post(
       `${process.env.EVO_URL}/message/sendText/${body.instance}`,
-      {
-        number,
-        text: reply
-      },
-      {
-        headers: { apikey: process.env.EVO_API_KEY }
-      }
+      { number, text: reply },
+      { headers: { apikey: process.env.EVO_API_KEY } }
     );
   } catch (err) {
     console.error("WEBHOOK ERROR:", err.response?.data || err.message);
   }
   res.sendStatus(200);
 });
+
 // ---------------- HEALTH ----------------
 app.get('/', (req, res) => res.send("VAYU LIVE"));
+
 // ---------------- START ----------------
 app.listen(process.env.PORT || 3000, () => {
-  console.log("SERVER LIVE");
+  console.log("🚀 SERVER LIVE");
 });
