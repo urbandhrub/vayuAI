@@ -8,42 +8,16 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// ---------------- DATABASE (SAFE) ----------------
+// ---------------- DATABASE ----------------
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
   max: 2
 });
 
-// ---------------- SIMPLE CACHE ----------------
-const cache = new Map();
-
-async function isValid(instance) {
-  if (cache.has(instance)) return cache.get(instance);
-
-  const res = await pool.query(
-    "SELECT expires_at FROM instances WHERE instance_name = $1",
-    [instance]
-  );
-
-  const valid =
-    res.rows.length > 0 &&
-    new Date() < new Date(res.rows[0].expires_at);
-
-  cache.set(instance, valid);
-  setTimeout(() => cache.delete(instance), 60000);
-
-  return valid;
-}
-
 // ---------------- AI ----------------
 async function askAI(text) {
-  const systemPrompt = `
-You are Vayu, a real human assistant.
-- Reply in SAME language
-- Keep it short
-- Sound natural
-`;
+  const system = "Reply like a real human. Same language. Short.";
 
   try {
     const res = await axios.post(
@@ -51,7 +25,7 @@ You are Vayu, a real human assistant.
       {
         model: "llama3-70b-8192",
         messages: [
-          { role: "system", content: systemPrompt },
+          { role: "system", content: system },
           { role: "user", content: text }
         ]
       },
@@ -63,7 +37,7 @@ You are Vayu, a real human assistant.
       }
     );
 
-    return res.data.choices?.[0]?.message?.content || "Hmm.";
+    return res.data.choices?.[0]?.message?.content || "Hmm";
   } catch {
     try {
       const res = await axios.post(
@@ -72,14 +46,14 @@ You are Vayu, a real human assistant.
           contents: [
             {
               parts: [
-                { text: `${systemPrompt}\n\nUser: ${text}` }
+                { text: `${system}\n\nUser: ${text}` }
               ]
             }
           ]
         }
       );
 
-      return res.data.candidates?.[0]?.content?.parts?.[0]?.text || "Hmm.";
+      return res.data.candidates?.[0]?.content?.parts?.[0]?.text || "Hmm";
     } catch {
       return "Hmm...";
     }
@@ -106,9 +80,6 @@ app.post('/create-instance', async (req, res) => {
       }
     );
 
-    const base64 = evo.data?.qrcode?.base64;
-    if (!base64) throw new Error("QR failed");
-
     await pool.query(
       `INSERT INTO instances (id, instance_name, status, expires_at)
        VALUES ($1,$2,$3,$4)
@@ -121,7 +92,7 @@ app.post('/create-instance', async (req, res) => {
       success: true,
       instance: instanceName,
       expires: expiry,
-      qr: base64
+      qr: evo.data?.qrcode?.base64
     });
 
   } catch (err) {
@@ -130,41 +101,54 @@ app.post('/create-instance', async (req, res) => {
   }
 });
 
-// ---------------- WEBHOOK (FINAL FIX) ----------------
+// ---------------- WEBHOOK ----------------
 app.post('/webhook', async (req, res) => {
   try {
     const body = req.body;
 
+    // only messages
     if (body.event !== "messages.upsert") {
       return res.sendStatus(200);
     }
 
     const msg = Array.isArray(body.data) ? body.data[0] : body.data;
 
-    // ignore delivery/status spam
-    if (msg.status && msg.status !== "READ") {
-      return res.sendStatus(200);
-    }
-
-    if (!msg?.key || msg.key.fromMe) {
+    // ignore non-user messages
+    if (!msg?.message || msg.key.fromMe) {
       return res.sendStatus(200);
     }
 
     const sender = msg.key.remoteJid;
 
     const text =
-      msg.message?.conversation ||
-      msg.message?.extendedTextMessage?.text;
+      msg.message.conversation ||
+      msg.message.extendedTextMessage?.text;
 
-    if (!sender || !text) return res.sendStatus(200);
+    if (!text) return res.sendStatus(200);
 
-    console.log("IN:", sender, text);
+    console.log("USER:", sender, text);
 
-    const number = sender.split('@')[0]; // 🔥 critical fix
+    const number = sender.split('@')[0];
 
+    // ---------------- DB CHECK ----------------
+    let valid = false;
+
+    try {
+      const check = await pool.query(
+        "SELECT expires_at FROM instances WHERE instance_name = $1",
+        [body.instance]
+      );
+
+      valid =
+        check.rows.length > 0 &&
+        new Date() < new Date(check.rows[0].expires_at);
+
+    } catch (e) {
+      console.log("DB error:", e.message);
+    }
+
+    // ---------------- AI ----------------
     let reply;
-
-    const valid = await isValid(body.instance);
 
     if (valid) {
       reply = await askAI(text);
@@ -172,8 +156,9 @@ app.post('/webhook', async (req, res) => {
       reply = "Trial expired.";
     }
 
-    console.log("OUT:", reply);
+    console.log("AI:", reply);
 
+    // ---------------- SEND MESSAGE ----------------
     await axios.post(
       `${process.env.EVO_URL}/message/sendText/${body.instance}`,
       {
