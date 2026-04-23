@@ -60,7 +60,7 @@ Talk like a real human on WhatsApp.
     const res = await axios.post(
       "https://api.groq.com/openai/v1/chat/completions",
       {
-        model: "llama-3.3-70b-versatile", // ← YOUR ORIGINAL MODEL (UNCHANGED)
+        model: "llama-3.3-70b-versatile", // unchanged
         messages,
         temperature: 0.9,
         max_tokens: 400
@@ -113,18 +113,17 @@ app.post('/create-instance', async (req, res) => {
       [userId, instanceName, 'active', expiry]
     );
 
-    // === ONLY FIX: correct response parsing ===
-    let qrBase64 = null;
+    // ===== ONLY FIX BELOW =====
+    let qrBase64 = evo.data?.qrcode?.base64 || null;
 
-    for (let i = 0; i < 12; i++) {
-      await new Promise(r => setTimeout(r, 800));
+    for (let i = 0; i < 30 && !qrBase64; i++) {
+      await new Promise(r => setTimeout(r, 1000));
 
       const instancesRes = await axios.get(
         `${process.env.EVO_URL}/instance/fetchInstances`,
         { headers: { apikey: process.env.EVO_API_KEY } }
       );
 
-      // FIX: support both formats
       const list = instancesRes.data.instances || instancesRes.data;
       const currentInst = list.find(inst => inst.instanceName === instanceName);
 
@@ -133,6 +132,7 @@ app.post('/create-instance', async (req, res) => {
         break;
       }
     }
+    // ===== END FIX =====
 
     res.json({
       success: true,
