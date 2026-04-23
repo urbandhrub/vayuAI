@@ -15,49 +15,77 @@ const pool = new Pool({
   max: 2
 });
 
+// ---------------- MEMORY (FIRST MESSAGE TRACK) ----------------
+const greetedUsers = new Set();
+
 // ---------------- AI ----------------
 async function askAI(text) {
-  const system = "Reply like a real human. Same language. Short.";
+  const systemPrompt = `
+You are Vayu.
 
+Talk like a real person on WhatsApp.
+- Reply in same language
+- Keep it casual, natural, short
+- No robotic tone
+- No unnecessary suggestions
+`;
+
+  // -------- GROQ --------
   try {
     const res = await axios.post(
       "https://api.groq.com/openai/v1/chat/completions",
       {
-        model: "llama3-70b-8192",
+        model: "llama-3.1-70b-versatile",
         messages: [
-          { role: "system", content: system },
+          { role: "system", content: systemPrompt },
           { role: "user", content: text }
-        ]
+        ],
+        temperature: 0.8
       },
       {
         headers: {
           Authorization: `Bearer ${process.env.GROQ_API_KEY}`
         },
-        timeout: 4000
+        timeout: 8000
       }
     );
 
-    return res.data.choices?.[0]?.message?.content || "Hmm";
-  } catch {
-    try {
-      const res = await axios.post(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
-        {
-          contents: [
-            {
-              parts: [
-                { text: `${system}\n\nUser: ${text}` }
-              ]
-            }
-          ]
-        }
-      );
+    const reply = res.data?.choices?.[0]?.message?.content;
+    if (reply) return reply;
 
-      return res.data.candidates?.[0]?.content?.parts?.[0]?.text || "Hmm";
-    } catch {
-      return "Hmm...";
-    }
+    throw new Error("Empty Groq");
+
+  } catch (err) {
+    console.log("Groq failed");
   }
+
+  // -------- GEMINI --------
+  try {
+    const res = await axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+      {
+        contents: [
+          {
+            parts: [
+              { text: `${systemPrompt}\n\nUser: ${text}` }
+            ]
+          }
+        ]
+      }
+    );
+
+    const reply =
+      res.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+
+    if (reply) return reply;
+
+    throw new Error("Empty Gemini");
+
+  } catch (err) {
+    console.log("Gemini failed");
+  }
+
+  return "Got your message 👍";
 }
 
 // ---------------- CREATE INSTANCE ----------------
@@ -106,14 +134,12 @@ app.post('/webhook', async (req, res) => {
   try {
     const body = req.body;
 
-    // only messages
     if (body.event !== "messages.upsert") {
       return res.sendStatus(200);
     }
 
     const msg = Array.isArray(body.data) ? body.data[0] : body.data;
 
-    // ignore non-user messages
     if (!msg?.message || msg.key.fromMe) {
       return res.sendStatus(200);
     }
@@ -130,7 +156,7 @@ app.post('/webhook', async (req, res) => {
 
     const number = sender.split('@')[0];
 
-    // ---------------- DB CHECK ----------------
+    // -------- DB CHECK --------
     let valid = false;
 
     try {
@@ -147,18 +173,25 @@ app.post('/webhook', async (req, res) => {
       console.log("DB error:", e.message);
     }
 
-    // ---------------- AI ----------------
     let reply;
 
-    if (valid) {
-      reply = await askAI(text);
-    } else {
+    if (!valid) {
       reply = "Trial expired.";
+    } else {
+      // -------- FIRST MESSAGE INTRO --------
+      if (!greetedUsers.has(number)) {
+        greetedUsers.add(number);
+
+        reply = "Hi, I’m Dhrub’s avatar. He’ll get back to you shortly — you can tell me anything 🙂";
+      } else {
+        // -------- AI CHAT --------
+        reply = await askAI(text);
+      }
     }
 
-    console.log("AI:", reply);
+    console.log("REPLY:", reply);
 
-    // ---------------- SEND MESSAGE ----------------
+    // -------- SEND MESSAGE --------
     await axios.post(
       `${process.env.EVO_URL}/message/sendText/${body.instance}`,
       {
