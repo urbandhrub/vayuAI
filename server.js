@@ -20,47 +20,37 @@ const pool = new Pool({
     ssl: { rejectUnauthorized: false } 
 });
 
-// --- HUMAN-FIRST AI ENGINE ---
+// --- HUMAN-FIRST AI ENGINE (Multilingual) ---
 const askAI = async (text) => {
   const systemPrompt = `
-    You are a real human assistant named Vayu. 
-    1. Reply PURELY in the same language the user speaks to you (Bengali, Hindi, English, etc.).
-    2. Do NOT act like a bot. No "How can I help you?". Talk like a professional friend.
-    3. Be concise and helpful. 
-    4. If the user is angry, be calm. If they are happy, be excited.
+    You are a human assistant named Vayu. 
+    1. Reply PURELY in the same language the user speaks (Bengali, Hindi, English, etc.).
+    2. Sound like a professional human friend, not a bot. 
+    3. Keep it concise.
   `;
 
   try {
-    // Primary: Groq (Ultra Fast)
     const res = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
       model: "llama-3.3-70b-specdec",
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: text }
       ]
-    }, { 
-      headers: { 'Authorization': `Bearer ${process.env.GROQ_API_KEY}` }, 
-      timeout: 4000 
-    });
+    }, { headers: { 'Authorization': `Bearer ${process.env.GROQ_API_KEY}` }, timeout: 4000 });
     return res.data.choices[0].message.content;
   } catch (err) {
-    // Fallback: Gemini (Reliable)
     const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
     const res = await axios.post(geminiUrl, { 
-        contents: [{ 
-            parts: [{ text: `${systemPrompt}\n\nUser Message: ${text}` }] 
-        }] 
+        contents: [{ parts: [{ text: `${systemPrompt}\n\nUser: ${text}` }] }] 
     });
     return res.data.candidates[0].content.parts[0].text;
   }
 };
 
-// --- INSTANCE CREATION (7-DAY FREE TRIAL) ---
+// --- CREATE INSTANCE (Safety Checked) ---
 app.post('/create-instance', async (req, res) => {
   const { userId } = req.body;
-  
-  // Strategy: 7 Days Free (168 Hours)
-  const durationHours = 168; 
+  const durationHours = 168; // 7 Days
   const instanceName = `vayu_${userId}_${Date.now()}`;
 
   try {
@@ -75,6 +65,12 @@ app.post('/create-instance', async (req, res) => {
       }
     }, { headers: { 'apikey': process.env.EVO_API_KEY } });
 
+    // SAFETY CHECK: Prevents the "base64" crash
+    if (!evoRes.data || !evoRes.data.qrcode || !evoRes.data.qrcode.base64) {
+      console.error("Evolution API failed to return QR:", evoRes.data);
+      return res.status(500).json({ error: "Evolution Engine failed. Check API Key/URL." });
+    }
+
     const expiryDate = new Date(Date.now() + durationHours * 60 * 60 * 1000);
     
     await pool.query(
@@ -88,16 +84,17 @@ app.post('/create-instance', async (req, res) => {
     res.json({ 
       success: true, 
       qr_link: `https://vayuai.onrender.com/qrcodes/${instanceName}.png`, 
-      access_until: expiryDate,
-      message: "Your 7-day free trial has started!"
+      access_until: expiryDate 
     });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { 
+    console.error("Critical Error:", err.response?.data || err.message);
+    res.status(500).json({ error: "Connection to Evolution Engine failed." });
+  }
 });
 
 // --- WEBHOOK ---
 app.post('/webhook', async (req, res) => {
   const { event, instance, data } = req.body;
-  
   if (event === "messages.upsert" && data?.key && !data.key.fromMe) {
     const userMsg = data.message?.conversation || data.message?.extendedTextMessage?.text;
     if (!userMsg) return res.sendStatus(200);
@@ -112,7 +109,7 @@ app.post('/webhook', async (req, res) => {
       );
     } else {
       await axios.post(`${process.env.EVO_URL}/message/sendText/${instance}`, 
-        { number: data.key.remoteJid, text: "Trial expired. Contact dhrubo@dhrubo.shop to renew." }, 
+        { number: data.key.remoteJid, text: "Trial expired. Visit dhrubo.shop to renew." }, 
         { headers: { 'apikey': process.env.EVO_API_KEY } }
       );
     }
@@ -120,4 +117,6 @@ app.post('/webhook', async (req, res) => {
   res.sendStatus(200);
 });
 
-app.listen(process.env.PORT || 3000, () => console.log("🌪️ VAYU AI INDIA: ONLINE"));
+app.get('/', (req, res) => res.send("Vayu AI Online")); // For Pinger
+
+app.listen(process.env.PORT || 3000, () => console.log("🌪️ VAYU AI: READY"));
