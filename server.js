@@ -39,6 +39,7 @@ const askAI = async (text) => {
     }, { headers: { 'Authorization': `Bearer ${process.env.GROQ_API_KEY}` }, timeout: 4000 });
     return res.data.choices[0].message.content;
   } catch (err) {
+    console.log("Groq failed, switching to Gemini...");
     const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
     const res = await axios.post(geminiUrl, { 
         contents: [{ parts: [{ text: `${systemPrompt}\n\nUser: ${text}` }] }] 
@@ -47,7 +48,7 @@ const askAI = async (text) => {
   }
 };
 
-// --- CREATE INSTANCE (Safety Checked) ---
+// --- CREATE INSTANCE ---
 app.post('/create-instance', async (req, res) => {
   const { userId } = req.body;
   const durationHours = 168; // 7 Days
@@ -57,18 +58,11 @@ app.post('/create-instance', async (req, res) => {
     const evoRes = await axios.post(`${process.env.EVO_URL}/instance/create`, {
       instanceName, 
       integration: "WHATSAPP-BAILEYS", 
-      qrcode: true,
-      webhook: { 
-          enabled: true, 
-          url: `https://vayuai.onrender.com/webhook`, 
-          events: ["MESSAGES_UPSERT"] 
-      }
+      qrcode: true
     }, { headers: { 'apikey': process.env.EVO_API_KEY } });
 
-    // SAFETY CHECK: Prevents the "base64" crash
     if (!evoRes.data || !evoRes.data.qrcode || !evoRes.data.qrcode.base64) {
-      console.error("Evolution API failed to return QR:", evoRes.data);
-      return res.status(500).json({ error: "Evolution Engine failed. Check API Key/URL." });
+      return res.status(500).json({ error: "Evolution Engine failed to provide QR." });
     }
 
     const expiryDate = new Date(Date.now() + durationHours * 60 * 60 * 1000);
@@ -92,31 +86,43 @@ app.post('/create-instance', async (req, res) => {
   }
 });
 
-// --- WEBHOOK ---
+// --- WEBHOOK (FIXED FOR ARRAY DATA) ---
 app.post('/webhook', async (req, res) => {
   const { event, instance, data } = req.body;
-  if (event === "messages.upsert" && data?.key && !data.key.fromMe) {
-    const userMsg = data.message?.conversation || data.message?.extendedTextMessage?.text;
+
+  // Evolution sends 'data' as an ARRAY. We extract the first item.
+  const messageData = Array.isArray(data) ? data[0] : data;
+
+  if (event === "messages.upsert" && messageData?.key && !messageData.key.fromMe) {
+    const userMsg = messageData.message?.conversation || messageData.message?.extendedTextMessage?.text;
+    
     if (!userMsg) return res.sendStatus(200);
 
-    const check = await pool.query("SELECT expires_at FROM instances WHERE instance_name = $1", [instance]);
-    
-    if (check.rows.length > 0 && new Date() < new Date(check.rows[0].expires_at)) {
-      const reply = await askAI(userMsg);
-      await axios.post(`${process.env.EVO_URL}/message/sendText/${instance}`, 
-        { number: data.key.remoteJid, text: reply }, 
-        { headers: { 'apikey': process.env.EVO_API_KEY } }
-      );
-    } else {
-      await axios.post(`${process.env.EVO_URL}/message/sendText/${instance}`, 
-        { number: data.key.remoteJid, text: "Trial expired. Visit dhrubo.shop to renew." }, 
-        { headers: { 'apikey': process.env.EVO_API_KEY } }
-      );
+    try {
+      const check = await pool.query("SELECT expires_at FROM instances WHERE instance_name = $1", [instance]);
+      
+      if (check.rows.length > 0 && new Date() < new Date(check.rows[0].expires_at)) {
+        console.log(`Processing message from ${messageData.key.remoteJid}: ${userMsg}`);
+        const reply = await askAI(userMsg);
+        
+        await axios.post(`${process.env.EVO_URL}/message/sendText/${instance}`, 
+          { number: messageData.key.remoteJid, text: reply }, 
+          { headers: { 'apikey': process.env.EVO_API_KEY } }
+        );
+      } else {
+        await axios.post(`${process.env.EVO_URL}/message/sendText/${instance}`, 
+          { number: messageData.key.remoteJid, text: "Trial expired. Please visit dhrubo.shop to renew." }, 
+          { headers: { 'apikey': process.env.EVO_API_KEY } }
+        );
+      }
+    } catch (err) {
+      console.error("Webhook Logic Error:", err.message);
     }
   }
   res.sendStatus(200);
 });
 
-app.get('/', (req, res) => res.send("Vayu AI Online")); // For Pinger
+app.get('/', (req, res) => res.send("Vayu AI Online"));
 
-app.listen(process.env.PORT || 3000, () => console.log("🌪️ VAYU AI: READY"));
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`🌪️ VAYU AI: READY ON PORT ${PORT}`));
