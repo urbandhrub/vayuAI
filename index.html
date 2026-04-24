@@ -589,21 +589,31 @@
 
       statusText.textContent = 'Waiting for QR from WhatsApp...';
 
-      // Poll for QR
+      // Improved Polling Logic (as you requested)
       let qr = null;
-      for (let i = 0; i < 15; i++) {
-        await new Promise(r => setTimeout(r, 2000));
+      let attempts = 0;
 
-        const qrRes = await fetch(`${API_BASE}/get-qr/${data.instance}`);
-        const qrData = await qrRes.json();
+      while (!qr && attempts < 60) {
+        await new Promise(r => setTimeout(r, 1000));
 
-        if (qrData.ready && qrData.qr) {
-          qr = qrData.qr;
-          break;
+        try {
+          const qrRes = await fetch(`${API_BASE}/get-qr/${data.instance}`);
+          const qrData = await qrRes.json();
+
+          console.log("QR CHECK:", qrData);
+
+          if (qrData.ready && qrData.qr) {
+            qr = qrData.qr;
+            break;
+          }
+        } catch (e) {
+          console.log("QR FETCH ERROR:", e);
         }
+
+        attempts++;
       }
 
-      if (!qr) throw new Error('QR timed out. Please try again.');
+      if (!qr) throw new Error('QR not received yet. Try again.');
 
       qrImage.src = qr.startsWith('data:') ? qr : `data:image/png;base64,${qr}`;
       qrImage.classList.add('visible');
