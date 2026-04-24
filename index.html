@@ -30,11 +30,8 @@
     --shadow-lg: 0 12px 40px rgba(0,0,0,0.1), 0 4px 16px rgba(0,0,0,0.06);
     --shadow-green: 0 8px 32px rgba(0,168,132,0.28), 0 2px 8px rgba(0,168,132,0.16);
   }
-
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
   html { scroll-behavior: smooth; }
-
   body {
     font-family: 'DM Sans', sans-serif;
     background: var(--gray-50);
@@ -43,8 +40,6 @@
     overflow-x: hidden;
     position: relative;
   }
-
-  /* Subtle bg pattern */
   body::before {
     content: '';
     position: fixed;
@@ -56,19 +51,15 @@
     pointer-events: none;
     z-index: 0;
   }
-
-  /* ─── HEADER ───────────────────────────────────────────────────── */
   header {
     position: sticky;
     top: 0;
     z-index: 100;
     backdrop-filter: blur(20px) saturate(180%);
-    -webkit-backdrop-filter: blur(20px) saturate(180%);
     background: rgba(255,255,255,0.82);
     border-bottom: 1px solid rgba(229,231,235,0.8);
     box-shadow: 0 1px 20px rgba(0,0,0,0.05);
   }
-
   .header-inner {
     max-width: 1100px;
     margin: 0 auto;
@@ -78,14 +69,12 @@
     align-items: center;
     justify-content: space-between;
   }
-
   .logo {
     display: flex;
     align-items: center;
     gap: 10px;
     text-decoration: none;
   }
-
   .logo-icon {
     width: 36px;
     height: 36px;
@@ -96,9 +85,7 @@
     justify-content: center;
     box-shadow: 0 2px 10px rgba(0,168,132,0.3);
   }
-
   .logo-icon svg { width: 20px; height: 20px; fill: white; }
-
   .logo-text {
     font-family: 'Syne', sans-serif;
     font-weight: 800;
@@ -106,9 +93,7 @@
     color: var(--gray-900);
     letter-spacing: -0.02em;
   }
-
   .logo-text span { color: var(--green); }
-
   .trial-badge {
     display: flex;
     align-items: center;
@@ -122,20 +107,16 @@
     color: var(--green-dark);
     white-space: nowrap;
   }
-
   .trial-dot {
     width: 8px; height: 8px;
     background: var(--green);
     border-radius: 50%;
     animation: pulse-dot 2s infinite;
   }
-
   @keyframes pulse-dot {
     0%, 100% { transform: scale(1); opacity: 1; }
     50% { transform: scale(1.3); opacity: 0.7; }
   }
-
-  /* ─── MAIN LAYOUT ───────────────────────────────────────────────── */
   main {
     position: relative;
     z-index: 1;
@@ -147,12 +128,9 @@
     gap: 40px;
     align-items: start;
   }
-
-  /* ─── LEFT: HERO ────────────────────────────────────────────────── */
   .hero {
     padding-top: 20px;
   }
-
   .hero-eyebrow {
     display: inline-flex;
     align-items: center;
@@ -170,9 +148,6 @@
     opacity: 0;
     animation: fadeUp 0.6s 0.1s ease forwards;
   }
-
-  .hero-eyebrow svg { width: 12px; height: 12px; fill: var(--green); }
-
   .hero-title {
     font-family: 'Syne', sans-serif;
     font-weight: 800;
@@ -184,9 +159,7 @@
     opacity: 0;
     animation: fadeUp 0.6s 0.2s ease forwards;
   }
-
   .hero-title .accent { color: var(--green); }
-
   .hero-sub {
     font-size: 1rem;
     line-height: 1.7;
@@ -197,7 +170,6 @@
     opacity: 0;
     animation: fadeUp 0.6s 0.3s ease forwards;
   }
-
   .features {
     display: flex;
     flex-direction: column;
@@ -205,13 +177,11 @@
     opacity: 0;
     animation: fadeUp 0.6s 0.4s ease forwards;
   }
-
   .feature-item {
     display: flex;
     align-items: flex-start;
     gap: 12px;
   }
-
   .feature-icon {
     width: 32px; height: 32px; flex-shrink: 0;
     background: var(--green-light);
@@ -221,9 +191,7 @@
     justify-content: center;
     margin-top: 1px;
   }
-
   .feature-icon svg { width: 15px; height: 15px; fill: var(--green); }
-
   .feature-text strong {
     display: block;
     font-size: 0.88rem;
@@ -231,14 +199,11 @@
     color: var(--gray-800);
     margin-bottom: 2px;
   }
-
   .feature-text span {
     font-size: 0.8rem;
     color: var(--gray-600);
     line-height: 1.5;
   }
-
-  /* ─── RIGHT: ACTION CARD ────────────────────────────────────────── */
   .action-card {
     background: var(--white);
     border: 1px solid var(--gray-200);
@@ -250,7 +215,6 @@
     opacity: 0;
     animation: fadeUp 0.6s 0.15s ease forwards;
   }
-
   .card-title {
     font-family: 'Syne', sans-serif;
     font-weight: 700;
@@ -259,15 +223,12 @@
     margin-bottom: 6px;
     letter-spacing: -0.02em;
   }
-
   .card-sub {
     font-size: 0.82rem;
     color: var(--gray-600);
     margin-bottom: 24px;
     line-height: 1.5;
   }
-
-  /* QR Stage */
   .qr-stage {
     width: 100%;
     aspect-ratio: 1;
@@ -284,13 +245,11 @@
     transition: border-color 0.3s, background 0.3s;
     min-height: 200px;
   }
-
   .qr-stage.has-qr {
     border-style: solid;
     border-color: var(--green);
     background: white;
   }
-
   .qr-placeholder {
     display: flex;
     flex-direction: column;
@@ -298,7 +257,6 @@
     gap: 12px;
     transition: opacity 0.3s;
   }
-
   .qr-placeholder-icon {
     width: 56px; height: 56px;
     background: var(--gray-100);
@@ -307,9 +265,7 @@
     align-items: center;
     justify-content: center;
   }
-
   .qr-placeholder-icon svg { width: 28px; height: 28px; fill: var(--gray-400); }
-
   .qr-placeholder p {
     font-size: 0.82rem;
     color: var(--gray-400);
@@ -317,7 +273,6 @@
     line-height: 1.5;
     max-width: 180px;
   }
-
   .qr-image {
     width: 100%;
     height: 100%;
@@ -325,10 +280,7 @@
     display: none;
     animation: fadeIn 0.5s ease;
   }
-
   .qr-image.visible { display: block; }
-
-  /* Progress bar / cold start */
   .cold-start-bar {
     display: none;
     flex-direction: column;
@@ -337,16 +289,13 @@
     padding: 0 20px;
     text-align: center;
   }
-
   .cold-start-bar.visible { display: flex; }
   .cold-start-bar p {
     font-size: 0.75rem;
     color: var(--gray-600);
     line-height: 1.5;
   }
-
   .cold-start-bar p strong { color: var(--gray-800); }
-
   .progress-track {
     width: 100%;
     height: 5px;
@@ -354,7 +303,6 @@
     border-radius: 100px;
     overflow: hidden;
   }
-
   .progress-fill {
     height: 100%;
     width: 0%;
@@ -362,14 +310,11 @@
     border-radius: 100px;
     animation: progressAnim 25s linear forwards;
   }
-
   @keyframes progressAnim {
     0% { width: 0%; }
     80% { width: 88%; }
     100% { width: 95%; }
   }
-
-  /* Expiry */
   .expiry-info {
     display: none;
     align-items: center;
@@ -382,11 +327,8 @@
     font-size: 0.78rem;
     color: var(--green-dark);
   }
-
   .expiry-info.visible { display: flex; }
   .expiry-info svg { width: 14px; height: 14px; fill: var(--green); flex-shrink: 0; }
-
-  /* CTA Button */
   .btn-cta {
     width: 100%;
     padding: 16px 24px;
@@ -408,7 +350,6 @@
     position: relative;
     overflow: hidden;
   }
-
   .btn-cta::before {
     content: '';
     position: absolute;
@@ -416,24 +357,16 @@
     background: linear-gradient(135deg, rgba(255,255,255,0.12) 0%, transparent 60%);
     pointer-events: none;
   }
-
   .btn-cta:hover:not(:disabled) {
     transform: translateY(-1px);
     box-shadow: 0 12px 40px rgba(0,168,132,0.38), 0 4px 12px rgba(0,168,132,0.22);
     background: var(--green-dark);
   }
-
-  .btn-cta:active:not(:disabled) { transform: translateY(0); }
-
   .btn-cta:disabled {
     opacity: 0.75;
     cursor: not-allowed;
-    transform: none;
   }
-
   .btn-cta svg { width: 18px; height: 18px; fill: white; flex-shrink: 0; }
-
-  /* Spinner */
   .spinner {
     width: 18px; height: 18px;
     border: 2.5px solid rgba(255,255,255,0.3);
@@ -442,20 +375,15 @@
     animation: spin 0.7s linear infinite;
     flex-shrink: 0;
   }
-
   @keyframes spin { to { transform: rotate(360deg); } }
-
   .status-text {
     font-size: 0.72rem;
     color: var(--gray-400);
     text-align: center;
     margin-top: 14px;
   }
-
   .status-text.success { color: var(--green); }
   .status-text.error { color: #ef4444; }
-
-  /* Error box */
   .error-box {
     display: none;
     background: #fff5f5;
@@ -467,10 +395,7 @@
     margin-top: 12px;
     line-height: 1.5;
   }
-
   .error-box.visible { display: block; }
-
-  /* ─── PING INDICATOR ────────────────────────────────────────────── */
   .ping-indicator {
     position: fixed;
     bottom: 20px;
@@ -490,63 +415,20 @@
     opacity: 0;
     transition: opacity 0.4s;
   }
-
   .ping-indicator.visible { opacity: 1; }
   .ping-dot { width: 7px; height: 7px; background: var(--green); border-radius: 50%; }
-
-  /* ─── ANIMATIONS ────────────────────────────────────────────────── */
   @keyframes fadeUp {
     from { opacity: 0; transform: translateY(18px); }
     to { opacity: 1; transform: translateY(0); }
   }
-
   @keyframes fadeIn {
     from { opacity: 0; }
     to { opacity: 1; }
-  }
-
-  /* ─── FOOTER ────────────────────────────────────────────────────── */
-  footer {
-    position: relative; z-index: 1;
-    border-top: 1px solid var(--gray-200);
-    padding: 20px 24px;
-    text-align: center;
-    font-size: 0.75rem;
-    color: var(--gray-400);
-    background: var(--white);
-  }
-
-  footer span { color: var(--green); font-weight: 500; }
-
-  /* ─── RESPONSIVE ────────────────────────────────────────────────── */
-  @media (max-width: 768px) {
-    main {
-      grid-template-columns: 1fr;
-      padding: 28px 16px 60px;
-      gap: 28px;
-    }
-
-    .action-card {
-      position: static;
-      padding: 24px;
-    }
-
-    .hero-title { font-size: clamp(1.8rem, 8vw, 2.4rem); }
-
-    .btn-cta { padding: 18px 24px; font-size: 1rem; }
-
-    .ping-indicator { bottom: 12px; right: 12px; }
-  }
-
-  @media (max-width: 400px) {
-    .header-inner { padding: 0 16px; }
-    .trial-badge { font-size: 0.7rem; padding: 5px 10px 5px 7px; }
   }
 </style>
 </head>
 <body>
 
-<!-- ── HEADER ── -->
 <header>
   <div class="header-inner">
     <a href="#" class="logo">
@@ -562,9 +444,7 @@
   </div>
 </header>
 
-<!-- ── MAIN ── -->
 <main>
-  <!-- LEFT: Hero -->
   <section class="hero">
     <div class="hero-eyebrow">
       <svg viewBox="0 0 24 24"><path d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
@@ -608,12 +488,10 @@
     </div>
   </section>
 
-  <!-- RIGHT: Action Card -->
   <aside class="action-card">
     <h2 class="card-title">Connect WhatsApp</h2>
     <p class="card-sub">Scan the QR code with your WhatsApp to activate your AI agent.</p>
 
-    <!-- QR Stage -->
     <div class="qr-stage" id="qrStage">
       <div class="qr-placeholder" id="qrPlaceholder">
         <div class="qr-placeholder-icon">
@@ -628,37 +506,30 @@
       <img class="qr-image" id="qrImage" alt="WhatsApp QR Code" />
     </div>
 
-    <!-- Expiry -->
     <div class="expiry-info" id="expiryInfo">
       <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg>
       <span id="expiryText">Access active —</span>
     </div>
 
-    <!-- CTA Button -->
     <button class="btn-cta" id="ctaBtn" onclick="getQRCode()">
       <svg viewBox="0 0 24 24"><path d="M3 3h6v6H3zM15 3h6v6h-6zM3 15h6v6H3zM15 15h2v2h-2zM19 15h2v2h-2zM17 17h2v2h-2zM15 19h2v2h-2zM19 19h2v2h-2z"/></svg>
       Get My QR Code
     </button>
-
     <p class="status-text" id="statusText">Secure · Encrypted · No data stored</p>
-
     <div class="error-box" id="errorBox"></div>
   </aside>
 </main>
 
-<!-- ── FOOTER ── -->
 <footer>
   © 2025 <span>Vayu AI</span> · Powered by WhatsApp Web.js · <span>7-Day Free Trial</span>
 </footer>
 
-<!-- ── PING INDICATOR ── -->
 <div class="ping-indicator" id="pingIndicator">
   <div class="ping-dot"></div>
   Server alive
 </div>
 
 <script>
-  // ── UNIQUE BROWSER ID ──────────────────────────────────────────────
   function getBrowserId() {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
     let id = '';
@@ -667,11 +538,8 @@
     }
     return id;
   }
-
   const API_BASE = 'https://vayuai.onrender.com';
-  const COLD_START_THRESHOLD = 3000; // ms
 
-  // ── GET QR CODE ────────────────────────────────────────────────────
   async function getQRCode() {
     const btn = document.getElementById('ctaBtn');
     const statusText = document.getElementById('statusText');
@@ -683,78 +551,58 @@
     const expiryInfo = document.getElementById('expiryInfo');
     const expiryText = document.getElementById('expiryText');
 
-    // Reset state
     errorBox.classList.remove('visible');
-    errorBox.textContent = '';
     qrImage.classList.remove('visible');
     qrStage.classList.remove('has-qr');
     expiryInfo.classList.remove('visible');
-    qrPlaceholder.style.display = 'none';
+    qrPlaceholder.style.display = 'flex';
     coldStartBar.classList.remove('visible');
 
-    // Button loading
     btn.disabled = true;
     btn.innerHTML = '<div class="spinner"></div> Connecting…';
-    statusText.textContent = 'Requesting QR code from server…';
+    statusText.textContent = 'Requesting QR code...';
     statusText.className = 'status-text';
 
-    // Cold-start timer
     const coldStartTimer = setTimeout(() => {
       coldStartBar.classList.add('visible');
-      statusText.textContent = 'Server is waking up, please wait…';
-    }, COLD_START_THRESHOLD);
+      statusText.textContent = 'Server waking up (free tier)...';
+    }, 3000);
 
     try {
       const userId = getBrowserId();
-      const controller = new AbortController();
-      const fetchTimeout = setTimeout(() => controller.abort(), 60000);
 
       const response = await fetch(`${API_BASE}/create-instance`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId }),
-        signal: controller.signal,
+        body: JSON.stringify({ userId })
       });
 
-      clearTimeout(fetchTimeout);
       clearTimeout(coldStartTimer);
       coldStartBar.classList.remove('visible');
 
-      if (!response.ok) {
-        const errText = await response.text().catch(() => 'Unknown error');
-        throw new Error(`Server responded with ${response.status}: ${errText}`);
-      }
+      if (!response.ok) throw new Error('Server error');
 
       const data = await response.json();
 
-      if (!data.qr_link) throw new Error('No QR code received. Please try again.');
+      if (!data.qr) {
+        throw new Error('No QR code received. Please try again.');
+      }
 
-      // Show QR
-      qrImage.src = data.qr_link;
-      qrImage.onload = () => {
-        qrImage.classList.add('visible');
-        qrStage.classList.add('has-qr');
-        statusText.textContent = '✓ QR ready — scan with WhatsApp';
-        statusText.className = 'status-text success';
-      };
-      qrImage.onerror = () => {
-        // Try as direct src regardless
-        qrImage.classList.add('visible');
-        qrStage.classList.add('has-qr');
-        statusText.textContent = '✓ QR loaded — scan with WhatsApp';
-        statusText.className = 'status-text success';
-      };
+      qrImage.src = data.qr.startsWith('data:') ? data.qr : `data:image/png;base64,${data.qr}`;
+      qrImage.classList.add('visible');
+      qrStage.classList.add('has-qr');
+      qrPlaceholder.style.display = 'none';
 
-      // Expiry
-      if (data.access_until) {
-        const expDate = new Date(data.access_until);
-        const formatted = expDate.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
-        expiryText.textContent = `Access until: ${formatted}`;
+      statusText.textContent = '✓ Scan with WhatsApp now!';
+      statusText.className = 'status-text success';
+
+      if (data.expires) {
+        const expDate = new Date(data.expires);
+        expiryText.textContent = `Valid until: ${expDate.toLocaleDateString('en-IN')}`;
         expiryInfo.classList.add('visible');
       }
 
-      // Update button
-      btn.innerHTML = `<svg viewBox="0 0 24 24" style="width:18px;height:18px;fill:white"><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" stroke="white" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg> QR Ready — Refresh`;
+      btn.innerHTML = 'Refresh QR';
       btn.disabled = false;
 
     } catch (err) {
@@ -762,34 +610,25 @@
       coldStartBar.classList.remove('visible');
       qrPlaceholder.style.display = 'flex';
 
-      let msg = err.message || 'Something went wrong. Please try again.';
-      if (err.name === 'AbortError') msg = 'Request timed out. The server may be down. Please try again in a moment.';
-
-      errorBox.textContent = '⚠ ' + msg;
+      errorBox.textContent = '⚠ ' + (err.message || 'Failed to load QR');
       errorBox.classList.add('visible');
       statusText.textContent = 'Failed to load QR';
       statusText.className = 'status-text error';
-
-      btn.innerHTML = `<svg viewBox="0 0 24 24" style="width:18px;height:18px;fill:white"><path d="M3 3h6v6H3zM15 3h6v6h-6zM3 15h6v6H3zM15 15h2v2h-2zM19 15h2v2h-2zM17 17h2v2h-2zM15 19h2v2h-2zM19 19h2v2h-2z"/></svg> Try Again`;
+      btn.innerHTML = 'Try Again';
       btn.disabled = false;
     }
   }
 
-  // ── BACKGROUND PINGER (keep Render awake every 10 min) ────────────
+  // Ping to keep server alive
   const pingIndicator = document.getElementById('pingIndicator');
-
   async function pingServer() {
     try {
       await fetch(`${API_BASE}/`, { method: 'GET', mode: 'no-cors' });
       pingIndicator.classList.add('visible');
-      setTimeout(() => pingIndicator.classList.remove('visible'), 3000);
-    } catch (_) {
-      // silent fail
-    }
+      setTimeout(() => pingIndicator.classList.remove('visible'), 2500);
+    } catch (_) {}
   }
-
-  // Ping immediately on load (light touch), then every 10 minutes
-  setTimeout(pingServer, 5000);
+  setTimeout(pingServer, 4000);
   setInterval(pingServer, 10 * 60 * 1000);
 </script>
 </body>
