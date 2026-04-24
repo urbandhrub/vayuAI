@@ -551,6 +551,7 @@
     const expiryInfo = document.getElementById('expiryInfo');
     const expiryText = document.getElementById('expiryText');
 
+    // Reset UI
     errorBox.classList.remove('visible');
     qrImage.classList.remove('visible');
     qrStage.classList.remove('has-qr');
@@ -560,7 +561,7 @@
 
     btn.disabled = true;
     btn.innerHTML = '<div class="spinner"></div> Connecting…';
-    statusText.textContent = 'Requesting QR code...';
+    statusText.textContent = 'Creating instance...';
     statusText.className = 'status-text';
 
     const coldStartTimer = setTimeout(() => {
@@ -584,11 +585,27 @@
 
       const data = await response.json();
 
-      if (!data.qr) {
-        throw new Error('No QR code received. Please try again.');
+      if (!data.instance) throw new Error('Instance creation failed');
+
+      statusText.textContent = 'Waiting for QR from WhatsApp...';
+
+      // Poll for QR
+      let qr = null;
+      for (let i = 0; i < 15; i++) {
+        await new Promise(r => setTimeout(r, 2000));
+
+        const qrRes = await fetch(`${API_BASE}/get-qr/${data.instance}`);
+        const qrData = await qrRes.json();
+
+        if (qrData.ready && qrData.qr) {
+          qr = qrData.qr;
+          break;
+        }
       }
 
-      qrImage.src = data.qr.startsWith('data:') ? data.qr : `data:image/png;base64,${data.qr}`;
+      if (!qr) throw new Error('QR timed out. Please try again.');
+
+      qrImage.src = qr.startsWith('data:') ? qr : `data:image/png;base64,${qr}`;
       qrImage.classList.add('visible');
       qrStage.classList.add('has-qr');
       qrPlaceholder.style.display = 'none';
