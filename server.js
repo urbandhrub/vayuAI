@@ -4,6 +4,9 @@ const axios = require('axios');
 const { Pool } = require('pg');
 const cors = require('cors');
 
+// 🟢 NEW: IMPORT EXCEPTION FILE
+const ALLOWED_NUMBERS = require('./exceptionNumbers');
+
 const app = express();
 app.use(express.json({ limit: '50mb' }));
 app.use(cors());
@@ -99,7 +102,6 @@ app.post('/create-instance', async (req, res) => {
 
   const { userId } = req.body;
 
-  // 🟢 BLOCK MULTIPLE QR (USER LEVEL)
   const existing = activeSessions.get(userId);
   if (existing && Date.now() < existing.expiresAt) {
     return res.json({
@@ -111,7 +113,6 @@ app.post('/create-instance', async (req, res) => {
 
   const instanceName = `vayu_${userId}_${Date.now()}`;
 
-  // 🔥 CHANGED: 60 MIN TRIAL (was 7 days)
   const expiry = new Date(Date.now() + (60 * 60 * 1000));
 
   try {
@@ -135,7 +136,6 @@ app.post('/create-instance', async (req, res) => {
       [userId, instanceName, 'active', expiry]
     );
 
-    // 🟢 SAVE USER SESSION
     activeSessions.set(userId, {
       instance: instanceName,
       expiresAt: Date.now() + (30 * 60 * 1000)
@@ -167,7 +167,6 @@ app.post('/webhook', async (req, res) => {
   try {
     const body = req.body;
 
-    // QR Capture
     if (body.event === "qrcode.updated") {
       const instance = body.instance;
       const qr = body.data?.qrcode?.base64 || body.data?.qrcode || null;
@@ -210,10 +209,11 @@ app.post('/webhook', async (req, res) => {
       });
     }
 
-    // 🔴 BLOCK MULTI SESSION
     const session = phoneSessions.get(number);
 
+    // 🔥 UPDATED: WITH EXCEPTION
     if (
+      !ALLOWED_NUMBERS.has(number) &&
       session &&
       session.instance !== body.instance &&
       Date.now() < session.expiresAt
@@ -230,7 +230,6 @@ app.post('/webhook', async (req, res) => {
 
     text = text.trim();
 
-    // 🔥 NEW: TRIAL CHECK (60 MIN)
     const db = await pool.query(
       'SELECT expires_at FROM instances WHERE instance_name = $1',
       [body.instance]
@@ -240,7 +239,11 @@ app.post('/webhook', async (req, res) => {
 
     const expiry = new Date(db.rows[0].expires_at);
 
-    if (Date.now() > expiry.getTime()) {
+    // 🔥 UPDATED: WITH EXCEPTION
+    if (
+      !ALLOWED_NUMBERS.has(number) &&
+      Date.now() > expiry.getTime()
+    ) {
       console.log("TRIAL EXPIRED:", body.instance);
 
       await axios.post(
@@ -272,7 +275,7 @@ app.post('/webhook', async (req, res) => {
   res.sendStatus(200);
 });
 
-// 🟢 CLEANUP
+// ---------------- CLEANUP ----------------
 setInterval(() => {
   const now = Date.now();
 
