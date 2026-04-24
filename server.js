@@ -110,7 +110,9 @@ app.post('/create-instance', async (req, res) => {
   }
 
   const instanceName = `vayu_${userId}_${Date.now()}`;
-  const expiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
+  // 🔥 CHANGED: 60 MIN TRIAL (was 7 days)
+  const expiry = new Date(Date.now() + (60 * 60 * 1000));
 
   try {
     const evo = await axios.post(
@@ -227,6 +229,31 @@ app.post('/webhook', async (req, res) => {
     if (!text) return res.sendStatus(200);
 
     text = text.trim();
+
+    // 🔥 NEW: TRIAL CHECK (60 MIN)
+    const db = await pool.query(
+      'SELECT expires_at FROM instances WHERE instance_name = $1',
+      [body.instance]
+    );
+
+    if (!db.rows.length) return res.sendStatus(200);
+
+    const expiry = new Date(db.rows[0].expires_at);
+
+    if (Date.now() > expiry.getTime()) {
+      console.log("TRIAL EXPIRED:", body.instance);
+
+      await axios.post(
+        `${process.env.EVO_URL}/message/sendText/${body.instance}`,
+        {
+          number,
+          text: "Session expired. Generate new QR to continue."
+        },
+        { headers: { apikey: process.env.EVO_API_KEY } }
+      );
+
+      return res.sendStatus(200);
+    }
 
     const reply = await askAI(number, text);
 
