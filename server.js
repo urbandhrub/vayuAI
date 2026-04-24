@@ -5,7 +5,7 @@ const { Pool } = require('pg');
 const cors = require('cors');
 
 const app = express();
-app.use(express.json({ limit: '50mb' }));   // Important for large QR
+app.use(express.json({ limit: '50mb' }));
 app.use(cors());
 
 // ---------------- DATABASE ----------------
@@ -17,6 +17,12 @@ const pool = new Pool({
 
 // ---------------- QR STORE ----------------
 const qrStore = new Map();
+
+// 🟢 USER SESSION (QR level)
+const activeSessions = new Map();
+
+// 🟢 PHONE SESSION (REAL CONTROL)
+const phoneSessions = new Map();
 
 // ---------------- MEMORY ----------------
 async function getHistory(userId) {
@@ -39,9 +45,10 @@ async function saveMessage(userId, role, content) {
   );
 }
 
-// ---------------- AI (Your Original Working Logic) ----------------
+// ---------------- AI ----------------
 async function askAI(userId, text) {
   const history = await getHistory(userId);
+
   const messages = [
     {
       role: "system",
@@ -57,6 +64,7 @@ Talk like a real human on WhatsApp.
     ...history,
     { role: "user", content: text }
   ];
+
   try {
     const res = await axios.post(
       "https://api.groq.com/openai/v1/chat/completions",
@@ -72,10 +80,14 @@ Talk like a real human on WhatsApp.
         }
       }
     );
+
     const reply = res.data.choices[0].message.content;
+
     await saveMessage(userId, "user", text);
     await saveMessage(userId, "assistant", reply);
+
     return reply;
+
   } catch (err) {
     console.log("AI ERROR:", err.response?.data || err.message);
     return "bol na, sun raha hoon 🙂";
@@ -84,9 +96,22 @@ Talk like a real human on WhatsApp.
 
 // ---------------- CREATE INSTANCE ----------------
 app.post('/create-instance', async (req, res) => {
+
   const { userId } = req.body;
+
+  // 🟢 BLOCK MULTIPLE QR (USER LEVEL)
+  const existing = activeSessions.get(userId);
+  if (existing && Date.now() < existing.expiresAt) {
+    return res.json({
+      success: true,
+      instance: existing.instance,
+      reused: true
+    });
+  }
+
   const instanceName = `vayu_${userId}_${Date.now()}`;
   const expiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
   try {
     const evo = await axios.post(
       `${process.env.EVO_URL}/instance/create`,
@@ -108,12 +133,19 @@ app.post('/create-instance', async (req, res) => {
       [userId, instanceName, 'active', expiry]
     );
 
+    // 🟢 SAVE USER SESSION
+    activeSessions.set(userId, {
+      instance: instanceName,
+      expiresAt: Date.now() + (30 * 60 * 1000)
+    });
+
     res.json({
       success: true,
       instance: instanceName,
       qr: evo.data?.qrcode?.base64,
       expires: expiry
     });
+
   } catch (err) {
     console.error("CREATE ERROR:", err.response?.data || err.message);
     res.status(500).json({ error: "Instance failed" });
@@ -127,20 +159,22 @@ app.get('/get-qr/:instance', (req, res) => {
   res.json({ ready: !!qr, qr: qr || null });
 });
 
-// ---------------- WEBHOOK (Your Original + QR Capture) ----------------
+// ---------------- WEBHOOK ----------------
 const processed = new Set();
 app.post('/webhook', async (req, res) => {
   try {
     const body = req.body;
 
-    // Capture QR Code
+    // QR Capture
     if (body.event === "qrcode.updated") {
       const instance = body.instance;
       const qr = body.data?.qrcode?.base64 || body.data?.qrcode || null;
+
       if (qr) {
         qrStore.set(instance, qr);
-        console.log("✅ QR STORED for", instance);
+        console.log("QR STORED:", instance);
       }
+
       return res.sendStatus(200);
     }
 
@@ -149,25 +183,52 @@ app.post('/webhook', async (req, res) => {
     }
 
     const msg = Array.isArray(body.data) ? body.data[0] : body.data;
+
     if (!msg?.message || msg.key.fromMe) {
       return res.sendStatus(200);
     }
 
     const msgId = msg.key.id;
+
     if (processed.has(msgId)) return res.sendStatus(200);
+
     processed.add(msgId);
     setTimeout(() => processed.delete(msgId), 60000);
 
     const sender = msg.key.remoteJid;
     const number = sender.replace(/[^0-9]/g, "");
-    let text = msg.message.conversation || msg.message.extendedTextMessage?.text;
+
+    // 🟢 PHONE SESSION LOCK
+    const existingPhone = phoneSessions.get(number);
+
+    if (!existingPhone || Date.now() > existingPhone.expiresAt) {
+      phoneSessions.set(number, {
+        instance: body.instance,
+        expiresAt: Date.now() + (30 * 60 * 1000)
+      });
+    }
+
+    // 🔴 BLOCK MULTI SESSION
+    const session = phoneSessions.get(number);
+
+    if (
+      session &&
+      session.instance !== body.instance &&
+      Date.now() < session.expiresAt
+    ) {
+      console.log("BLOCKED MULTI LOGIN:", number);
+      return res.sendStatus(200);
+    }
+
+    let text =
+      msg.message.conversation ||
+      msg.message.extendedTextMessage?.text;
+
     if (!text) return res.sendStatus(200);
 
     text = text.trim();
-    console.log("USER:", number, text);
 
     const reply = await askAI(number, text);
-    console.log("REPLY:", reply);
 
     await new Promise(r => setTimeout(r, 700));
 
@@ -176,16 +237,32 @@ app.post('/webhook', async (req, res) => {
       { number, text: reply },
       { headers: { apikey: process.env.EVO_API_KEY } }
     );
+
   } catch (err) {
     console.error("WEBHOOK ERROR:", err.response?.data || err.message);
   }
+
   res.sendStatus(200);
 });
+
+// 🟢 CLEANUP
+setInterval(() => {
+  const now = Date.now();
+
+  for (const [userId, session] of activeSessions.entries()) {
+    if (now > session.expiresAt) activeSessions.delete(userId);
+  }
+
+  for (const [number, session] of phoneSessions.entries()) {
+    if (now > session.expiresAt) phoneSessions.delete(number);
+  }
+
+}, 5 * 60 * 1000);
 
 // ---------------- HEALTH ----------------
 app.get('/', (req, res) => res.send("VAYU LIVE"));
 
 // ---------------- START ----------------
 app.listen(process.env.PORT || 3000, () => {
-  console.log("🚀 SERVER LIVE");
+  console.log("SERVER LIVE");
 });
