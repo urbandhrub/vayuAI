@@ -15,7 +15,7 @@ const pool = new Pool({
   max: 2
 });
 
-// ---------------- QR STORE (ADDED EARLIER, KEEP) ----------------
+// ---------------- QR STORE ----------------
 const qrStore = new Map();
 
 // ---------------- MEMORY ----------------
@@ -96,7 +96,7 @@ app.post('/create-instance', async (req, res) => {
   const expiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
   try {
-    const evo = await axios.post(
+    await axios.post(
       `${process.env.EVO_URL}/instance/create`,
       {
         instanceName,
@@ -116,23 +116,10 @@ app.post('/create-instance', async (req, res) => {
       [userId, instanceName, 'active', expiry]
     );
 
-    let qrBase64 = evo.data?.qrcode?.base64 || null;
-
-    // WAIT FOR WEBHOOK QR
-    for (let i = 0; i < 25 && !qrBase64; i++) {
-      await new Promise(r => setTimeout(r, 1000));
-
-      if (qrStore.has(instanceName)) {
-        qrBase64 = qrStore.get(instanceName);
-        console.log("✅ QR FROM STORE");
-        break;
-      }
-    }
-
+    // ❌ DO NOT WAIT FOR QR HERE ANYMORE
     res.json({
       success: true,
       instance: instanceName,
-      qr: qrBase64,
       expires: expiry
     });
 
@@ -142,14 +129,30 @@ app.post('/create-instance', async (req, res) => {
   }
 });
 
-// ---------------- WEBHOOK (EXISTING - UNCHANGED) ----------------
+// ---------------- GET QR (NEW) ----------------
+app.get('/get-qr/:instance', (req, res) => {
+  const instance = req.params.instance;
+
+  const qr = qrStore.get(instance);
+
+  if (!qr) {
+    return res.json({ ready: false });
+  }
+
+  res.json({
+    ready: true,
+    qr
+  });
+});
+
+// ---------------- WEBHOOK ----------------
 const processed = new Set();
 
 app.post('/webhook', async (req, res) => {
   try {
     const body = req.body;
 
-    // QR capture here ALSO (keep it)
+    // QR capture
     if (body.event === "qrcode.updated") {
       const instance = body.instance;
 
@@ -183,7 +186,7 @@ app.post('/webhook', async (req, res) => {
     setTimeout(() => processed.delete(msgId), 60000);
 
     const sender = msg.key.remoteJid;
-    const number = sender.replace(/[^0-9]/g, "");
+    const number = sender.split("@")[0];
 
     let text =
       msg.message.conversation ||
@@ -208,10 +211,7 @@ app.post('/webhook', async (req, res) => {
   res.sendStatus(200);
 });
 
-
-// =====================
-// 🔥 ONLY NEW ADDITION
-// =====================
+// ---------------- ALT QR ROUTE ----------------
 app.post('/webhook/qrcode-updated', (req, res) => {
   const body = req.body;
 
@@ -225,14 +225,12 @@ app.post('/webhook/qrcode-updated', (req, res) => {
 
     if (qr) {
       qrStore.set(instance, qr);
-      console.log("✅ QR RECEIVED (ALT ROUTE):", instance);
+      console.log("✅ QR RECEIVED:", instance);
     }
   }
 
   res.sendStatus(200);
 });
-// =====================
-
 
 // ---------------- HEALTH ----------------
 app.get('/', (req, res) => res.send("VAYU LIVE"));
