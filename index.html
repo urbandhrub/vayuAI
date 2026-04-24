@@ -772,7 +772,7 @@
     }, 3000);
 
     try {
-      const userId = document.getElementById('phone').value.trim();
+      const userId = getBrowserId();
       const response = await fetch(`${API_BASE}/create-instance`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
