@@ -377,20 +377,25 @@ function extractMessage(data) {
 }
 
 // ---------------- LID → PHONE RESOLUTION ----------------
+function isLid(jid) {
+  return (jid || '').endsWith('@lid');
+}
+
 function resolveNumber(body, msg) {
-  // 1. GROUP → participantAlt (real phone)
+  // 1. GROUP → participantAlt (real phone, never a LID)
   if (msg?.key?.participantAlt) {
     const n = jidToNumber(msg.key.participantAlt);
     if (n) return n;
   }
-  // 2. PRIVATE → remoteJid
-  if (msg?.key?.remoteJid) {
-    const n = jidToNumber(msg.key.remoteJid);
+  // 2. body.sender — always the real phone JID from Evo (e.g. 918240801921@s.whatsapp.net)
+  //    Check this BEFORE remoteJid because remoteJid may be a @lid in private chats
+  if (body?.sender && !isLid(body.sender)) {
+    const n = jidToNumber(body.sender);
     if (n) return n;
   }
-  // 3. fallback sender
-  if (body?.sender) {
-    const n = jidToNumber(body.sender);
+  // 3. PRIVATE → remoteJid only if it is NOT a LID
+  if (msg?.key?.remoteJid && !isLid(msg.key.remoteJid)) {
+    const n = jidToNumber(msg.key.remoteJid);
     if (n) return n;
   }
   return null;
