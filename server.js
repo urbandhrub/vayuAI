@@ -320,11 +320,13 @@ const QR_LIMIT = 5;
 // ---- HELPER: resolve real JID from LID addressing mode ----
 // WhatsApp's new LID mode sends a privacy-preserving numeric ID instead of
 // the real phone JID. remoteJidAlt holds the actual phone JID in that case.
-function resolveJid(key) {
-  if (key.addressingMode === 'lid' && key.remoteJidAlt) {
-    return key.remoteJidAlt; // e.g. "919874076688@s.whatsapp.net"
+// If remoteJidAlt is missing, fall back to the top-level sender field.
+function resolveJid(key, sender) {
+  if (key.addressingMode === 'lid' || (key.remoteJid && key.remoteJid.endsWith('@lid'))) {
+    if (key.remoteJidAlt) return key.remoteJidAlt;
+    if (sender) return sender; // e.g. "918240801921@s.whatsapp.net"
   }
-  return key.remoteJid; // e.g. "919874076688@s.whatsapp.net"
+  return key.remoteJid;
 }
 // Extract bare phone number from a JID
 function jidToNumber(jid) {
@@ -384,10 +386,13 @@ async function handleWebhook(body) {
   if (processed.has(uniqueKey)) return;
   processed.add(uniqueKey);
   setTimeout(() => processed.delete(uniqueKey), 30000);
-  // ---- FIX: resolve real JID (handles LID addressing mode) ----
-  const realJid = resolveJid(msg.key);
+  // ---- FIX: resolve real JID (handles LID addressing mode + missing remoteJidAlt) ----
+  const realJid = resolveJid(msg.key, body.sender);
   const number = jidToNumber(realJid);
-  if (!number) return;
+  if (!number) {
+    console.warn(`[SKIP] Could not resolve number from jid=${msg.key.remoteJid} sender=${body.sender}`);
+    return;
+  }
   console.log(`[MSG] from=${number} jid=${realJid} mode=${msg.key.addressingMode || 'normal'}`);
   // SESSION LOCK — prevent same user being handled by multiple instances
   const existing = phoneSessions.get(number);
