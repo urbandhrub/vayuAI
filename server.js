@@ -349,12 +349,12 @@ function extractMessage(data) {
   if (Array.isArray(data?.messages) && data.messages[0]?.key) return data.messages[0];
   return null;
 }
-// ---------------- PERMANENT LID FIX (FINAL) ----------------
+// ---------------- PERMANENT LID FIX ----------------
 function resolveNumber(body, msg) {
   const tryGet = (jid) => {
     if (!jid) return null;
     const n = jidToNumber(jid);
-    return (n && n.length >= 10 && n.length <= 13) ? n : null;   // ← 13 max = skips all LID
+    return (n && n.length >= 10 && n.length <= 13) ? n : null;
   };
 
   return (
@@ -375,7 +375,6 @@ async function handleWebhook(body) {
   if (!instanceName) return;
   const event = normalizeEvent(body.event);
   console.log(`[WH] instance=${instanceName} event=${event}`);
-  // ---- QR UPDATED ----
   if (event === "qrcode.updated") {
     const qr = body.data?.qrcode?.base64 || body.data?.qrcode || body.data?.base64 || null;
     const result = await pool.query(
@@ -397,7 +396,6 @@ async function handleWebhook(body) {
     }
     return;
   }
-  // ---- CONNECTION UPDATE ----
   if (event === "connection.update") {
     const state = body.data?.state || body.data?.instance?.state;
     console.log(`[CONN] ${instanceName} state=${state}`);
@@ -417,12 +415,9 @@ async function handleWebhook(body) {
     }
     return;
   }
-  // ---- MESSAGES ----
   if (!event.includes("messages")) return;
-  const msg =
-    body.data?.message ||
-    body.data?.messages?.[0] ||
-    body.data;
+  // PERMANENT FIX for all payload shapes (including the one in your log)
+  const msg = body.data?.messages?.[0] || (body.data?.key ? body.data : body.data?.message) || body.data;
   if (!msg?.key) {
     console.log(`[WH] messages event but no message key found — skipping`);
     return;
