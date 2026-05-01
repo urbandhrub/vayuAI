@@ -182,32 +182,36 @@ async function generateImage(instance, number, prompt) {
     return "Sorry Sir, I couldn't generate the image right now. Please try again later.";
   }
 }
-// ==================== IMAGE VISION FEATURE (FIXED) ====================
-async function getMediaBase64(instance, messageId, remoteJid) {
+// ==================== IMAGE VISION FEATURE (FINAL FIX) ====================
+async function getMediaBase64(instance, messageId, remoteJid, fullMessage) {
   try {
-    const res = await axios.post(
+    // Method 1: Standard
+    const res1 = await axios.post(
       `${process.env.EVO_URL}/chat/getBase64FromMediaMessage/${instance}`,
-      {
-        message: {
-          key: { 
-            id: messageId,
-            remoteJid: remoteJid 
-          }
-        }
-      },
-      {
-        headers: { apikey: process.env.EVO_API_KEY }
-      }
+      { message: { key: { id: messageId, remoteJid: remoteJid } } },
+      { headers: { apikey: process.env.EVO_API_KEY } }
     );
-    
-    if (res.data && res.data.base64) {
-      return res.data.base64;
+    if (res1.data && res1.data.base64 && res1.data.base64.length > 100) {
+      console.log("✅ Image OK (Method 1)");
+      return res1.data.base64;
     }
     
-    console.log("Trying alternative method for image...");
+    // Method 2: Full message
+    console.log("Trying Method 2 for image...");
+    const res2 = await axios.post(
+      `${process.env.EVO_URL}/chat/getBase64FromMediaMessage/${instance}`,
+      { message: fullMessage },
+      { headers: { apikey: process.env.EVO_API_KEY } }
+    );
+    if (res2.data && res2.data.base64 && res2.data.base64.length > 100) {
+      console.log("✅ Image OK (Method 2)");
+      return res2.data.base64;
+    }
+    
+    console.log("❌ Image failed both methods");
     return null;
   } catch (err) {
-    console.log("MEDIA BASE64 ERROR:", err.response?.data || err.message);
+    console.log("❌ IMAGE BASE64 ERROR:", err.response?.data || err.message);
     return null;
   }
 }
@@ -221,29 +225,19 @@ async function analyzeImage(userId, imageBase64, caption = "") {
           {
             role: "user",
             content: [
-              {
-                type: "text",
-                text: caption || "Analyze this image and give legal monetization ideas for Indian market"
-              },
-              {
-                type: "image_url",
-                image_url: {
-                  url: `data:image/jpeg;base64,${imageBase64}`
-                }
-              }
+              { type: "text", text: caption || "Analyze this image and give legal monetization ideas for Indian market" },
+              { type: "image_url", image_url: { url: `data:image/jpeg;base64,${imageBase64}` } }
             ]
           }
         ],
         max_tokens: 450
       },
-      {
-        headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` }
-      }
+      { headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` } }
     );
     return response.data.choices[0].message.content;
   } catch (err) {
     console.log("VISION ERROR:", err.response?.data || err.message);
-    return "Sorry Sir, I couldn't analyze the image right now. Please try again.";
+    return "Sorry Sir, I couldn't analyze this image clearly. Please try a different photo.";
   }
 }
 // ==================== PDF SUMMARIZER FEATURE ====================
@@ -260,16 +254,11 @@ async function summarizePDF(userId, pdfBase64, filename = "document.pdf") {
       {
         model: "llama-3.3-70b-versatile",
         messages: [
-          {
-            role: "user",
-            content: `Summarize this PDF and give legal monetization ideas for Indian market:\n\n${text}`
-          }
+          { role: "user", content: `Summarize this PDF and give legal monetization ideas for Indian market:\n\n${text}` }
         ],
         max_tokens: 500
       },
-      {
-        headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` }
-      }
+      { headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` } }
     );
     return response.data.choices[0].message.content;
   } catch (err) {
@@ -283,21 +272,13 @@ async function transcribeVoice(userId, audioBase64) {
     const audioBuffer = Buffer.from(audioBase64, 'base64');
   
     const formData = new (require('form-data'))();
-    formData.append('file', audioBuffer, {
-      filename: 'voice.ogg',
-      contentType: 'audio/ogg'
-    });
+    formData.append('file', audioBuffer, { filename: 'voice.ogg', contentType: 'audio/ogg' });
     formData.append('model', 'whisper-large-v3');
     formData.append('response_format', 'json');
     const response = await axios.post(
       "https://api.groq.com/openai/v1/audio/transcriptions",
       formData,
-      {
-        headers: {
-          ...formData.getHeaders(),
-          Authorization: `Bearer ${process.env.GROQ_API_KEY}`
-        }
-      }
+      { headers: { ...formData.getHeaders(), Authorization: `Bearer ${process.env.GROQ_API_KEY}` } }
     );
     return response.data.text;
   } catch (err) {
@@ -305,36 +286,62 @@ async function transcribeVoice(userId, audioBase64) {
     return null;
   }
 }
-// ==================== YOUTUBE SUMMARY FEATURE ====================
+// ==================== YOUTUBE SUMMARY FEATURE (FIXED) ====================
 async function summarizeYouTube(userId, youtubeUrl) {
   try {
-    const videoId = youtubeUrl.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/)?.[1];
+    // Better regex for all YouTube URL formats
+    const videoIdMatch = youtubeUrl.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})/);
+    const videoId = videoIdMatch ? videoIdMatch[1] : null;
+    
     if (!videoId) return "Invalid YouTube link. Please send a proper link.";
-    const transcriptRes = await axios.get(`https://yt-api.com/api/transcript?videoId=${videoId}`);
-    const transcript = transcriptRes.data?.transcript?.map(t => t.text).join(" ").slice(0, 6000) || "";
-    if (!transcript) {
-      return "Sorry Sir, I couldn't get the transcript. Please send the video title + description instead.";
+    
+    console.log("▶️ YouTube Video ID:", videoId);
+    
+    // Try to get transcript
+    let transcript = "";
+    try {
+      const transcriptRes = await axios.get(`https://yt-api.com/api/transcript?videoId=${videoId}`, { timeout: 10000 });
+      transcript = transcriptRes.data?.transcript?.map(t => t.text).join(" ").slice(0, 6000) || "";
+    } catch (e) {
+      console.log("Transcript not available, using fallback");
     }
+    
+    // If no transcript, use title + description fallback
+    if (!transcript) {
+      const videoInfoRes = await axios.get(`https://yt-api.com/api/video/info?videoId=${videoId}`, { timeout: 10000 });
+      const title = videoInfoRes.data?.title || "";
+      const description = videoInfoRes.data?.description?.slice(0, 2000) || "";
+      
+      const response = await axios.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        {
+          model: "llama-3.3-70b-versatile",
+          messages: [
+            { role: "user", content: `Summarize this YouTube video and give legal monetization ideas for Indian market:\n\nTitle: ${title}\n\nDescription: ${description}` }
+          ],
+          max_tokens: 500
+        },
+        { headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` } }
+      );
+      return response.data.choices[0].message.content;
+    }
+    
+    // With transcript
     const response = await axios.post(
       "https://api.groq.com/openai/v1/chat/completions",
       {
         model: "llama-3.3-70b-versatile",
         messages: [
-          {
-            role: "user",
-            content: `Summarize this YouTube video and give legal monetization ideas for Indian market:\n\n${transcript}`
-          }
+          { role: "user", content: `Summarize this YouTube video and give legal monetization ideas for Indian market:\n\n${transcript}` }
         ],
         max_tokens: 500
       },
-      {
-        headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` }
-      }
+      { headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` } }
     );
     return response.data.choices[0].message.content;
   } catch (err) {
     console.log("YOUTUBE ERROR:", err.response?.data || err.message);
-    return "Sorry Sir, I couldn't summarize this YouTube video right now.";
+    return "Sorry Sir, I couldn't summarize this YouTube video right now. Please try again later.";
   }
 }
 // ============================================================
@@ -343,30 +350,19 @@ app.post('/create-instance', async (req, res) => {
   const { userId } = req.body;
   const existing = activeSessions.get(userId);
   if (existing && Date.now() < existing.expiresAt) {
-    return res.json({
-      success: true,
-      instance: existing.instance,
-      reused: true
-    });
+    return res.json({ success: true, instance: existing.instance, reused: true });
   }
   const instanceName = `vayu_${userId}_${Date.now()}`;
  
-  // 🟢 FIX: PERMANENT ACCESS FOR EXCEPTION NUMBERS
   const isPermanent = ALLOWED_NUMBERS.has(userId);
   const expiry = isPermanent
-    ? new Date(Date.now() + 365 * 24 * 60 * 60 * 1000) // 1 YEAR (forever)
-    : new Date(Date.now() + 60 * 60 * 1000); // 60 MIN for normal users
+    ? new Date(Date.now() + 365 * 24 * 60 * 60 * 1000)
+    : new Date(Date.now() + 60 * 60 * 1000);
   try {
     const evo = await axios.post(
       `${process.env.EVO_URL}/instance/create`,
-      {
-        instanceName,
-        integration: "WHATSAPP-BAILEYS",
-        qrcode: true
-      },
-      {
-        headers: { apikey: process.env.EVO_API_KEY }
-      }
+      { instanceName, integration: "WHATSAPP-BAILEYS", qrcode: true },
+      { headers: { apikey: process.env.EVO_API_KEY } }
     );
     await pool.query(
       `INSERT INTO instances (id, instance_name, status, expires_at)
@@ -375,16 +371,8 @@ app.post('/create-instance', async (req, res) => {
        DO UPDATE SET instance_name=$2, expires_at=$4`,
       [userId, instanceName, 'active', expiry]
     );
-    activeSessions.set(userId, {
-      instance: instanceName,
-      expiresAt: Date.now() + (30 * 60 * 1000)
-    });
-    res.json({
-      success: true,
-      instance: instanceName,
-      qr: evo.data?.qrcode?.base64,
-      expires: expiry
-    });
+    activeSessions.set(userId, { instance: instanceName, expiresAt: Date.now() + (30 * 60 * 1000) });
+    res.json({ success: true, instance: instanceName, qr: evo.data?.qrcode?.base64, expires: expiry });
   } catch (err) {
     console.error("CREATE ERROR:", err.response?.data || err.message);
     res.status(500).json({ error: "Instance failed" });
@@ -404,216 +392,128 @@ app.post('/webhook', async (req, res) => {
     if (body.event === "qrcode.updated") {
       const instance = body.instance;
       const qr = body.data?.qrcode?.base64 || body.data?.qrcode || null;
-      if (qr) {
-        qrStore.set(instance, qr);
-        console.log("QR STORED:", instance);
-      }
+      if (qr) { qrStore.set(instance, qr); console.log("QR STORED:", instance); }
       return res.sendStatus(200);
     }
-    if (body.event !== "messages.upsert") {
-      return res.sendStatus(200);
-    }
+    if (body.event !== "messages.upsert") return res.sendStatus(200);
+    
     const msg = Array.isArray(body.data) ? body.data[0] : body.data;
-    if (!msg?.message || msg.key.fromMe) {
-      return res.sendStatus(200);
-    }
+    if (!msg?.message || msg.key.fromMe) return res.sendStatus(200);
+    
     const msgId = msg.key.id;
     if (processed.has(msgId)) return res.sendStatus(200);
     processed.add(msgId);
     setTimeout(() => processed.delete(msgId), 60000);
+    
     const sender = msg.key.remoteJid;
-  
-    // ==================== FIXED NUMBER EXTRACTION ====================
     let number = sender.replace(/[^0-9]/g, "");
-    if (number.length === 10 && /^[6-9]/.test(number)) {
-      number = "91" + number;
-    }
-    if (number.startsWith("0") && number.length === 11) {
-      number = "91" + number.slice(1);
-    }
+    if (number.length === 10 && /^[6-9]/.test(number)) number = "91" + number;
+    if (number.startsWith("0") && number.length === 11) number = "91" + number.slice(1);
+    
     console.log("📱 INCOMING NUMBER:", number);
     console.log("✅ ALLOWED?", ALLOWED_NUMBERS.has(number));
-    // ============================================================
-    // 🟢 PHONE SESSION LOCK
+    
     const existingPhone = phoneSessions.get(number);
     if (!existingPhone || Date.now() > existingPhone.expiresAt) {
-      phoneSessions.set(number, {
-        instance: body.instance,
-        expiresAt: Date.now() + (30 * 60 * 1000)
-      });
+      phoneSessions.set(number, { instance: body.instance, expiresAt: Date.now() + (30 * 60 * 1000) });
     }
     const session = phoneSessions.get(number);
-    // 🔥 UPDATED: WITH EXCEPTION
-    if (
-      !ALLOWED_NUMBERS.has(number) &&
-      session &&
-      session.instance !== body.instance &&
-      Date.now() < session.expiresAt
-    ) {
+    if (!ALLOWED_NUMBERS.has(number) && session && session.instance !== body.instance && Date.now() < session.expiresAt) {
       console.log("BLOCKED MULTI LOGIN:", number);
       return res.sendStatus(200);
     }
-    let text =
-      msg.message.conversation ||
-      msg.message.extendedTextMessage?.text ||
-      msg.message.imageMessage?.caption ||
-      msg.message.documentMessage?.caption ||
-      msg.message.audioMessage?.caption;
-    if (!text && !msg.message.imageMessage && !msg.message.audioMessage && !msg.message.documentMessage) {
-      return res.sendStatus(200);
-    }
-    // ==================== IMAGE GENERATION HANDLER ====================
+    
+    let text = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || msg.message.documentMessage?.caption || msg.message.audioMessage?.caption;
+    if (!text && !msg.message.imageMessage && !msg.message.audioMessage && !msg.message.documentMessage) return res.sendStatus(200);
+    
+    // IMAGE GENERATION
     const lowerText = text ? text.toLowerCase() : "";
-    if (text && (
-      lowerText.includes("generate image") ||
-      lowerText.includes("create image") ||
-      lowerText.includes("make a logo") ||
-      lowerText.includes("generate a logo") ||
-      lowerText.includes("create a poster") ||
-      lowerText.includes("design a banner")
-    )) {
+    if (text && (lowerText.includes("generate image") || lowerText.includes("create image") || lowerText.includes("make a logo") || lowerText.includes("generate a logo") || lowerText.includes("create a poster") || lowerText.includes("design a banner"))) {
       console.log("🖼️ IMAGE GENERATION REQUEST from:", number);
       await sendTyping(body.instance, number);
-    
       const prompt = text.replace(/generate image|create image|make a logo|generate a logo|create a poster|design a banner/gi, "").trim();
-      const result = await generateImage(body.instance, number, prompt);
-    
+      await generateImage(body.instance, number, prompt);
       return res.sendStatus(200);
     }
-    // ==================== IMAGE VISION HANDLER (FIXED) ====================
+    
+    // IMAGE VISION (FIXED)
     if (msg.message.imageMessage) {
       console.log("📷 IMAGE RECEIVED from:", number);
       await sendTyping(body.instance, number);
-    
-      const base64 = await getMediaBase64(body.instance, msg.key.id, sender);
-    
+      const base64 = await getMediaBase64(body.instance, msg.key.id, sender, msg.message);
       if (base64) {
         const caption = msg.message.imageMessage.caption || "";
         const visionReply = await analyzeImage(number, base64, caption);
-      
         await new Promise(r => setTimeout(r, 800));
-        await axios.post(
-          `${process.env.EVO_URL}/message/sendText/${body.instance}`,
-          { number, text: visionReply },
-          { headers: { apikey: process.env.EVO_API_KEY } }
-        );
+        await axios.post(`${process.env.EVO_URL}/message/sendText/${body.instance}`, { number, text: visionReply }, { headers: { apikey: process.env.EVO_API_KEY } });
         return res.sendStatus(200);
       } else {
-        await axios.post(
-          `${process.env.EVO_URL}/message/sendText/${body.instance}`,
-          { 
-            number, 
-            text: "Sorry Sir, I couldn't read this image clearly. Please try sending a clearer photo or with better lighting." 
-          },
-          { headers: { apikey: process.env.EVO_API_KEY } }
-        );
+        await axios.post(`${process.env.EVO_URL}/message/sendText/${body.instance}`, { number, text: "Sorry Sir, I couldn't read this image. Please try a clearer photo." }, { headers: { apikey: process.env.EVO_API_KEY } });
         return res.sendStatus(200);
       }
     }
-    // ==================== PDF HANDLER ====================
+    
+    // PDF
     if (msg.message.documentMessage) {
       console.log("📄 PDF RECEIVED from:", number);
       await sendTyping(body.instance, number);
-    
       const base64 = await getMediaBase64(body.instance, msg.key.id);
-    
       if (base64) {
         const filename = msg.message.documentMessage.fileName || "document.pdf";
         const pdfReply = await summarizePDF(number, base64, filename);
-      
         await new Promise(r => setTimeout(r, 800));
-        await axios.post(
-          `${process.env.EVO_URL}/message/sendText/${body.instance}`,
-          { number, text: pdfReply },
-          { headers: { apikey: process.env.EVO_API_KEY } }
-        );
+        await axios.post(`${process.env.EVO_URL}/message/sendText/${body.instance}`, { number, text: pdfReply }, { headers: { apikey: process.env.EVO_API_KEY } });
         return res.sendStatus(200);
       } else {
-        await axios.post(
-          `${process.env.EVO_URL}/message/sendText/${body.instance}`,
-          { number, text: "Sorry Sir, I couldn't read the PDF. Please try again." },
-          { headers: { apikey: process.env.EVO_API_KEY } }
-        );
+        await axios.post(`${process.env.EVO_URL}/message/sendText/${body.instance}`, { number, text: "Sorry Sir, I couldn't read the PDF. Please try again." }, { headers: { apikey: process.env.EVO_API_KEY } });
         return res.sendStatus(200);
       }
     }
-    // ==================== VOICE-TO-TEXT HANDLER ====================
+    
+    // VOICE
     if (msg.message.audioMessage) {
       console.log("🎙️ VOICE NOTE RECEIVED from:", number);
       await sendTyping(body.instance, number);
-    
       const base64 = await getMediaBase64(body.instance, msg.key.id);
-    
       if (base64) {
         const transcribedText = await transcribeVoice(number, base64);
-      
         if (transcribedText) {
           const reply = await askAI(number, transcribedText);
           await new Promise(r => setTimeout(r, 700));
-          await axios.post(
-            `${process.env.EVO_URL}/message/sendText/${body.instance}`,
-            { number, text: reply },
-            { headers: { apikey: process.env.EVO_API_KEY } }
-          );
+          await axios.post(`${process.env.EVO_URL}/message/sendText/${body.instance}`, { number, text: reply }, { headers: { apikey: process.env.EVO_API_KEY } });
           return res.sendStatus(200);
         } else {
-          await axios.post(
-            `${process.env.EVO_URL}/message/sendText/${body.instance}`,
-            { number, text: "Sorry Sir, I couldn't understand the voice note. Please type instead." },
-            { headers: { apikey: process.env.EVO_API_KEY } }
-          );
+          await axios.post(`${process.env.EVO_URL}/message/sendText/${body.instance}`, { number, text: "Sorry Sir, I couldn't understand the voice note. Please type instead." }, { headers: { apikey: process.env.EVO_API_KEY } });
           return res.sendStatus(200);
         }
       }
     }
-    // ==================== YOUTUBE SUMMARY HANDLER ====================
-    if (text && (text.includes("youtube.com") || text.includes("youtu.be"))) {
+    
+    // YOUTUBE (FIXED)
+    if (text && (text.includes("youtube.com") || text.includes("youtu.be") || text.includes("youtube.com/shorts"))) {
       console.log("▶️ YOUTUBE LINK RECEIVED from:", number);
       await sendTyping(body.instance, number);
-    
       const youtubeReply = await summarizeYouTube(number, text);
-    
       await new Promise(r => setTimeout(r, 800));
-      await axios.post(
-        `${process.env.EVO_URL}/message/sendText/${body.instance}`,
-        { number, text: youtubeReply },
-        { headers: { apikey: process.env.EVO_API_KEY } }
-      );
+      await axios.post(`${process.env.EVO_URL}/message/sendText/${body.instance}`, { number, text: youtubeReply }, { headers: { apikey: process.env.EVO_API_KEY } });
       return res.sendStatus(200);
     }
-    // ============================================================
+    
+    // NORMAL TEXT
     text = text.trim();
-    const db = await pool.query(
-      'SELECT expires_at FROM instances WHERE instance_name = $1',
-      [body.instance]
-    );
+    const db = await pool.query('SELECT expires_at FROM instances WHERE instance_name = $1', [body.instance]);
     if (!db.rows.length) return res.sendStatus(200);
     const expiry = new Date(db.rows[0].expires_at);
-    // 🔥 UPDATED: WITH EXCEPTION
-    if (
-      !ALLOWED_NUMBERS.has(number) &&
-      Date.now() > expiry.getTime()
-    ) {
+    if (!ALLOWED_NUMBERS.has(number) && Date.now() > expiry.getTime()) {
       console.log("TRIAL EXPIRED:", body.instance);
-      await axios.post(
-        `${process.env.EVO_URL}/message/sendText/${body.instance}`,
-        {
-          number,
-          text: "Session expired. Generate new QR to continue."
-        },
-        { headers: { apikey: process.env.EVO_API_KEY } }
-      );
+      await axios.post(`${process.env.EVO_URL}/message/sendText/${body.instance}`, { number, text: "Session expired. Generate new QR to continue." }, { headers: { apikey: process.env.EVO_API_KEY } });
       return res.sendStatus(200);
     }
-    // ==================== NORMAL TEXT WITH TYPING ====================
+    
     await sendTyping(body.instance, number);
     const reply = await askAI(number, text);
     await new Promise(r => setTimeout(r, 700));
-    await axios.post(
-      `${process.env.EVO_URL}/message/sendText/${body.instance}`,
-      { number, text: reply },
-      { headers: { apikey: process.env.EVO_API_KEY } }
-    );
+    await axios.post(`${process.env.EVO_URL}/message/sendText/${body.instance}`, { number, text: reply }, { headers: { apikey: process.env.EVO_API_KEY } });
   } catch (err) {
     console.error("WEBHOOK ERROR:", err.response?.data || err.message);
   }
@@ -622,16 +522,10 @@ app.post('/webhook', async (req, res) => {
 // ---------------- CLEANUP ----------------
 setInterval(() => {
   const now = Date.now();
-  for (const [userId, session] of activeSessions.entries()) {
-    if (now > session.expiresAt) activeSessions.delete(userId);
-  }
-  for (const [number, session] of phoneSessions.entries()) {
-    if (now > session.expiresAt) phoneSessions.delete(number);
-  }
+  for (const [userId, session] of activeSessions.entries()) { if (now > session.expiresAt) activeSessions.delete(userId); }
+  for (const [number, session] of phoneSessions.entries()) { if (now > session.expiresAt) phoneSessions.delete(number); }
 }, 5 * 60 * 1000);
 // ---------------- HEALTH ----------------
 app.get('/', (req, res) => res.send("VAYU LIVE"));
 // ---------------- START ----------------
-app.listen(process.env.PORT || 3000, () => {
-  console.log("SERVER LIVE");
-});
+app.listen(process.env.PORT || 3000, () => { console.log("SERVER LIVE"); });
