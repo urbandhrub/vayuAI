@@ -57,12 +57,10 @@ async function askAI(userId, text) {
   const messages = [
     {
       role: "system",
-      content: `You are Dhrub — an elite AI Business Consultant — the smartest, most patient, 
+      content: `You are Dhrub — an elite AI Business Consultant — the smartest, most patient,
 and most precise advisor any Indian entrepreneur will ever speak to.
-
-You have mentally scaled 500+ Indian businesses across coaching, 
+You have mentally scaled 500+ Indian businesses across coaching,
 retail, agencies, clinics, real estate, D2C, and local services.
-
 🌐 LANGUAGE DETECTION RULE (NON-NEGOTIABLE):
 - Detect the language of EVERY incoming message automatically
 - Reply in the EXACT same language the user writes in
@@ -70,76 +68,66 @@ retail, agencies, clinics, real estate, D2C, and local services.
 - If user writes in English → reply in English
 - If user writes in Hinglish → reply in Hinglish
 - If user switches language mid-chat → you switch instantly too
-- Support: Hindi, English, Hinglish, Bengali, Tamil, Telugu, 
+- Support: Hindi, English, Hinglish, Bengali, Tamil, Telugu,
   Marathi, Gujarati, Kannada, Punjabi, Malayalam — any Indian language
 - NEVER force English if user is comfortable in their mother tongue
 - Make them feel: "Yeh toh apni bhasha mein baat karta hai!"
-
 Your Core Expertise:
 - AI Implementation & Automation Systems for Indian businesses
 - WhatsApp + Instagram + YouTube Content & Lead Generation Funnels
 - Revenue Growth Systems using AI tools
 - Smart Automation that saves time and multiplies profit
 - Lead generation, conversion, and scaling strategies
-
 Your Thinking Framework (always in this order):
 Revenue → Automation → Content → AI Implementation → Lead Generation
-
 Your Personality:
 - Smartest person in the room — but never shows off
 - Calm, patient, deeply diplomatic
 - Reads the INTENT behind every message, not just the words
 - Adds 200% more value than what was asked
 - Always result-oriented — no fluff, no filler, no theory-dumping
-
 Your Response Rules (NON-NEGOTIABLE):
 - Max 6–8 lines per reply — WhatsApp-friendly, punchy, clear
 - Start with a SHARP business insight the user didn't expect
 - Always connect advice to revenue, time-saving, or profit impact
-- Use Indian context: ₹ pricing, UPI, WhatsApp Business, 
-  Instagram Reels, YouTube Shorts, Razorpay, local freelancers, 
+- Use Indian context: ₹ pricing, UPI, WhatsApp Business,
+  Instagram Reels, YouTube Shorts, Razorpay, local freelancers,
   Tier-2/Tier-3 city realities, GST, and Indian buying behavior
 - Give specific numbers/ranges: ₹5K–₹50K, 3–6 months, 2x–5x ROI
 - End with ONE clear, executable next step — no lists of options
 - Address user as "Sir" or "Ma'am" (read gender from context/name)
 - In Hindi/regional → use "Bhai", "Didi", "Sahab" as appropriate
 - Tone: Confident, sharp, practical, deeply respectful, zero arrogance
-
 Output Structure (every single reply):
 1. Sharp Unexpected Insight (something they didn't think about)
 2. Revenue / Growth Angle with ₹ Indian context
 3. Specific System, Tool, or Implementation Method
 4. ONE Clear Next Step (actionable today or this week)
-
 Intent Detection Rules:
-- If someone asks a vague question → infer business context, answer 
+- If someone asks a vague question → infer business context, answer
   the deeper question they MEANT to ask
 - If someone seems stuck or confused → diagnose the root problem first
-- If someone shares a result or win → celebrate + immediately show 
+- If someone shares a result or win → celebrate + immediately show
   the next level they should reach
 - If someone is overwhelmed → simplify ruthlessly, give ONE thing only
-- If someone asks outside business/AI/automation → warmly redirect 
+- If someone asks outside business/AI/automation → warmly redirect
   with a bridge back to their business growth
-
 Value Addition Rules:
-- Never answer ONLY what was asked — always add one insight they 
+- Never answer ONLY what was asked — always add one insight they
   didn't ask for but desperately needed
 - Connect dots across: marketing + operations + revenue + AI
 - Think 3 steps ahead of where the user currently is
 - If you see a hidden revenue leak or opportunity → flag it immediately
-
 Strict Boundaries:
 - Never suggest anything illegal, spammy, or against Indian laws
 - Never give exact financial predictions — only safe realistic ranges
 - Never overwhelm with 10 options — always guide to the BEST one
-
 Core Goal:
-Help any Indian business — small shop, coach, agency, clinic, 
-local service, D2C brand — grow revenue using AI + Automation + 
+Help any Indian business — small shop, coach, agency, clinic,
+local service, D2C brand — grow revenue using AI + Automation +
 Smart Content Systems.
-
 Every reply must make the user feel:
-"This is the best business advice I've ever received — and I got it 
+"This is the best business advice I've ever received — and I got it
 in under 60 seconds."
 You are the best business brain they can talk to on WhatsApp.`
     },
@@ -175,7 +163,7 @@ async function generateImage(instance, number, prompt) {
   try {
     const encodedPrompt = encodeURIComponent(prompt);
     const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&model=flux&seed=42`;
-    
+   
     await axios.post(
       `${process.env.EVO_URL}/message/sendMedia/${instance}`,
       {
@@ -214,7 +202,6 @@ async function getMediaBase64(instance, messageId) {
     return null;
   }
 }
-
 async function analyzeImage(userId, imageBase64, caption = "") {
   try {
     const response = await axios.post(
@@ -256,9 +243,9 @@ async function summarizePDF(userId, pdfBase64, filename = "document.pdf") {
     const pdf = require('pdf-parse');
     const pdfBuffer = Buffer.from(pdfBase64, 'base64');
     const data = await pdf(pdfBuffer);
-    
+   
     const text = data.text.slice(0, 8000);
-    
+   
     const response = await axios.post(
       "https://api.groq.com/openai/v1/chat/completions",
       {
@@ -285,7 +272,7 @@ async function summarizePDF(userId, pdfBase64, filename = "document.pdf") {
 async function transcribeVoice(userId, audioBase64) {
   try {
     const audioBuffer = Buffer.from(audioBase64, 'base64');
-    
+   
     const formData = new (require('form-data'))();
     formData.append('file', audioBuffer, {
       filename: 'voice.ogg',
@@ -293,7 +280,6 @@ async function transcribeVoice(userId, audioBase64) {
     });
     formData.append('model', 'whisper-large-v3');
     formData.append('response_format', 'json');
-
     const response = await axios.post(
       "https://api.groq.com/openai/v1/audio/transcriptions",
       formData,
@@ -315,14 +301,11 @@ async function summarizeYouTube(userId, youtubeUrl) {
   try {
     const videoId = youtubeUrl.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/)?.[1];
     if (!videoId) return "Invalid YouTube link. Please send a proper link.";
-
     const transcriptRes = await axios.get(`https://yt-api.com/api/transcript?videoId=${videoId}`);
     const transcript = transcriptRes.data?.transcript?.map(t => t.text).join(" ").slice(0, 6000) || "";
-
     if (!transcript) {
       return "Sorry Sir, I couldn't get the transcript. Please send the video title + description instead.";
     }
-
     const response = await axios.post(
       "https://api.groq.com/openai/v1/chat/completions",
       {
@@ -358,7 +341,13 @@ app.post('/create-instance', async (req, res) => {
     });
   }
   const instanceName = `vayu_${userId}_${Date.now()}`;
-  const expiry = new Date(Date.now() + (60 * 60 * 1000));
+  
+  // 🟢 FIX: PERMANENT ACCESS FOR EXCEPTION NUMBERS
+  const isPermanent = ALLOWED_NUMBERS.has(userId);
+  const expiry = isPermanent 
+    ? new Date(Date.now() + 365 * 24 * 60 * 60 * 1000)   // 1 YEAR (forever)
+    : new Date(Date.now() + 60 * 60 * 1000);            // 60 MIN for normal users
+
   try {
     const evo = await axios.post(
       `${process.env.EVO_URL}/instance/create`,
@@ -425,7 +414,7 @@ app.post('/webhook', async (req, res) => {
     processed.add(msgId);
     setTimeout(() => processed.delete(msgId), 60000);
     const sender = msg.key.remoteJid;
-    
+   
     // ==================== FIXED NUMBER EXTRACTION ====================
     let number = sender.replace(/[^0-9]/g, "");
     if (number.length === 10 && /^[6-9]/.test(number)) {
@@ -437,7 +426,6 @@ app.post('/webhook', async (req, res) => {
     console.log("📱 INCOMING NUMBER:", number);
     console.log("✅ ALLOWED?", ALLOWED_NUMBERS.has(number));
     // ============================================================
-
     // 🟢 PHONE SESSION LOCK
     const existingPhone = phoneSessions.get(number);
     if (!existingPhone || Date.now() > existingPhone.expiresAt) {
@@ -463,15 +451,14 @@ app.post('/webhook', async (req, res) => {
       msg.message.imageMessage?.caption ||
       msg.message.documentMessage?.caption ||
       msg.message.audioMessage?.caption;
-
     if (!text && !msg.message.imageMessage && !msg.message.audioMessage && !msg.message.documentMessage) {
       return res.sendStatus(200);
     }
     // ==================== IMAGE GENERATION HANDLER ====================
     const lowerText = text ? text.toLowerCase() : "";
     if (text && (
-      lowerText.includes("generate image") || 
-      lowerText.includes("create image") || 
+      lowerText.includes("generate image") ||
+      lowerText.includes("create image") ||
       lowerText.includes("make a logo") ||
       lowerText.includes("generate a logo") ||
       lowerText.includes("create a poster") ||
@@ -479,23 +466,23 @@ app.post('/webhook', async (req, res) => {
     )) {
       console.log("🖼️ IMAGE GENERATION REQUEST from:", number);
       await sendTyping(body.instance, number);
-      
+     
       const prompt = text.replace(/generate image|create image|make a logo|generate a logo|create a poster|design a banner/gi, "").trim();
       const result = await generateImage(body.instance, number, prompt);
-      
+     
       return res.sendStatus(200);
     }
     // ==================== IMAGE VISION HANDLER ====================
     if (msg.message.imageMessage) {
       console.log("📷 IMAGE RECEIVED from:", number);
       await sendTyping(body.instance, number);
-      
+     
       const base64 = await getMediaBase64(body.instance, msg.key.id);
-      
+     
       if (base64) {
         const caption = msg.message.imageMessage.caption || "";
         const visionReply = await analyzeImage(number, base64, caption);
-        
+       
         await new Promise(r => setTimeout(r, 800));
         await axios.post(
           `${process.env.EVO_URL}/message/sendText/${body.instance}`,
@@ -516,13 +503,13 @@ app.post('/webhook', async (req, res) => {
     if (msg.message.documentMessage) {
       console.log("📄 PDF RECEIVED from:", number);
       await sendTyping(body.instance, number);
-      
+     
       const base64 = await getMediaBase64(body.instance, msg.key.id);
-      
+     
       if (base64) {
         const filename = msg.message.documentMessage.fileName || "document.pdf";
         const pdfReply = await summarizePDF(number, base64, filename);
-        
+       
         await new Promise(r => setTimeout(r, 800));
         await axios.post(
           `${process.env.EVO_URL}/message/sendText/${body.instance}`,
@@ -543,12 +530,12 @@ app.post('/webhook', async (req, res) => {
     if (msg.message.audioMessage) {
       console.log("🎙️ VOICE NOTE RECEIVED from:", number);
       await sendTyping(body.instance, number);
-      
+     
       const base64 = await getMediaBase64(body.instance, msg.key.id);
-      
+     
       if (base64) {
         const transcribedText = await transcribeVoice(number, base64);
-        
+       
         if (transcribedText) {
           const reply = await askAI(number, transcribedText);
           await new Promise(r => setTimeout(r, 700));
@@ -572,9 +559,9 @@ app.post('/webhook', async (req, res) => {
     if (text && (text.includes("youtube.com") || text.includes("youtu.be"))) {
       console.log("▶️ YOUTUBE LINK RECEIVED from:", number);
       await sendTyping(body.instance, number);
-      
+     
       const youtubeReply = await summarizeYouTube(number, text);
-      
+     
       await new Promise(r => setTimeout(r, 800));
       await axios.post(
         `${process.env.EVO_URL}/message/sendText/${body.instance}`,
