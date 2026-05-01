@@ -39,32 +39,63 @@ async function saveMessage(userId, role, content) {
     [userId, role, content]
   );
 }
-// ---------------- AI ----------------
+// ==================== TYPING INDICATOR ====================
+async function sendTyping(instance, number) {
+  try {
+    await axios.post(
+      `${process.env.EVO_URL}/chat/sendPresence/${instance}`,
+      { number, presence: "composing" },
+      { headers: { apikey: process.env.EVO_API_KEY } }
+    );
+  } catch (err) {
+    console.log("TYPING ERROR:", err.message);
+  }
+}
+// ---------------- AI (TOP 1% BUSINESS BRAIN) ----------------
 async function askAI(userId, text) {
   const history = await getHistory(userId);
   const messages = [
     {
       role: "system",
-      content: `You are Dhrub — elite AI Revenue Strategist.
+      content: `You are Dhrub — Top 1% Business Revenue Strategist for Indian market.
 
-Specialization: AI, Automation, Influencer Marketing, PR, Content Creation & AI-powered Side Hustles only.
+Core Expertise:
+- AI Implementation & Automation Systems for Indian businesses
+- WhatsApp + Instagram Content + Lead Generation Funnels
+- Revenue Growth Systems using AI tools
+- Smart Automation that saves time and increases profit
+- Lead generation, conversion, and scaling strategies
 
-Core Rules:
-- Every reply must be short, sharp & WhatsApp-friendly (max 5 lines)
-- Lead with the single most valuable insight
-- Always connect to revenue, time-saving or scaling
-- End with ONE clear, realistic, executable next step
-- Address user as "Sir" or "Ma'am"
-- Speak like a top consultant: confident, precise, no fluff, no theory
-- If asked anything outside your specialization, reply exactly:  
-  "I specialize exclusively in AI, Automation, Influencer Marketing, PR, Content Creation & Side Hustles. I’d be glad to help with any of these, Sir/Ma'am."
+Your Thinking Style:
+- Think like a top business consultant who has scaled 100+ Indian businesses
+- Always focus on: Revenue → Automation → Content → AI Implementation → Lead Generation
+- Give practical, executable systems (not just ideas)
+- Use Indian context: ₹ pricing, UPI, WhatsApp Business, Instagram Reels, YouTube, local freelancers, Razorpay, etc.
+- Give specific numbers and ranges (₹5K–₹50K, 3–6 months, etc.)
 
-Response Framework:
-1. Acknowledge + sharp insight
-2. Revenue / scaling angle
-3. One practical executable action
+RESPONSE RULES (STRICT):
+- Max 6–7 lines (WhatsApp friendly)
+- Start with sharp business insight
+- Always connect to revenue or time-saving
+- End with ONE clear, executable next step
+- Address user as “Sir” or “Ma’am”
+- Tone: Confident, sharp, practical, no fluff
 
-Tone: Professional • Natural • Persuasive • Action-first`
+OUTPUT STRUCTURE:
+1. Sharp Business Insight
+2. Revenue / Growth Angle (with ₹ context)
+3. Specific System or Implementation Method
+4. One Clear Next Step
+
+STRICT BOUNDARIES:
+- Never suggest anything illegal, spammy, or against Indian laws
+- Never give exact financial predictions — only safe ranges
+- If asked anything outside business/AI/automation → politely redirect
+
+GOAL:
+Help any Indian business (small shop, coach, agency, local business) grow revenue using AI + Automation + Smart Content.
+
+You are the best business brain they can talk to on WhatsApp.`
     },
     ...history,
     { role: "user", content: text }
@@ -76,7 +107,7 @@ Tone: Professional • Natural • Persuasive • Action-first`
         model: "llama-3.3-70b-versatile",
         messages,
         temperature: 0.85,
-        max_tokens: 280
+        max_tokens: 300
       },
       {
         headers: {
@@ -91,6 +122,30 @@ Tone: Professional • Natural • Persuasive • Action-first`
   } catch (err) {
     console.log("AI ERROR:", err.response?.data || err.message);
     return "bol na, sun raha hoon 🙂";
+  }
+}
+// ==================== IMAGE GENERATION FEATURE (FREE) ====================
+async function generateImage(instance, number, prompt) {
+  try {
+    const encodedPrompt = encodeURIComponent(prompt);
+    const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&model=flux&seed=42`;
+    
+    await axios.post(
+      `${process.env.EVO_URL}/message/sendMedia/${instance}`,
+      {
+        number,
+        media: imageUrl,
+        fileName: "ai-generated-image.jpg",
+        caption: "Here is your generated image, Sir/Ma'am"
+      },
+      {
+        headers: { apikey: process.env.EVO_API_KEY }
+      }
+    );
+    return "Image generated successfully!";
+  } catch (err) {
+    console.log("IMAGE GENERATION ERROR:", err.message);
+    return "Sorry Sir, I couldn't generate the image right now. Please try again later.";
   }
 }
 // ==================== IMAGE VISION FEATURE ====================
@@ -126,7 +181,7 @@ async function analyzeImage(userId, imageBase64, caption = "") {
             content: [
               {
                 type: "text",
-                text: caption || "Analyze this image in detail and give smart revenue/monetization ideas"
+                text: caption || "Analyze this image and give legal monetization ideas for Indian market"
               },
               {
                 type: "image_url",
@@ -165,7 +220,7 @@ async function summarizePDF(userId, pdfBase64, filename = "document.pdf") {
         messages: [
           {
             role: "user",
-            content: `Summarize this PDF content and give actionable revenue/monetization ideas:\n\n${text}`
+            content: `Summarize this PDF and give legal monetization ideas for Indian market:\n\n${text}`
           }
         ],
         max_tokens: 500
@@ -212,11 +267,9 @@ async function transcribeVoice(userId, audioBase64) {
 // ==================== YOUTUBE SUMMARY FEATURE ====================
 async function summarizeYouTube(userId, youtubeUrl) {
   try {
-    // Extract video ID
     const videoId = youtubeUrl.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/)?.[1];
     if (!videoId) return "Invalid YouTube link. Please send a proper link.";
 
-    // Use free YouTube transcript API (no key needed)
     const transcriptRes = await axios.get(`https://yt-api.com/api/transcript?videoId=${videoId}`);
     const transcript = transcriptRes.data?.transcript?.map(t => t.text).join(" ").slice(0, 6000) || "";
 
@@ -231,7 +284,7 @@ async function summarizeYouTube(userId, youtubeUrl) {
         messages: [
           {
             role: "user",
-            content: `Summarize this YouTube video transcript and give smart revenue/monetization ideas:\n\n${transcript}`
+            content: `Summarize this YouTube video and give legal monetization ideas for Indian market:\n\n${transcript}`
           }
         ],
         max_tokens: 500
@@ -368,9 +421,28 @@ app.post('/webhook', async (req, res) => {
     if (!text && !msg.message.imageMessage && !msg.message.audioMessage && !msg.message.documentMessage) {
       return res.sendStatus(200);
     }
+    // ==================== IMAGE GENERATION HANDLER ====================
+    const lowerText = text ? text.toLowerCase() : "";
+    if (text && (
+      lowerText.includes("generate image") || 
+      lowerText.includes("create image") || 
+      lowerText.includes("make a logo") ||
+      lowerText.includes("generate a logo") ||
+      lowerText.includes("create a poster") ||
+      lowerText.includes("design a banner")
+    )) {
+      console.log("🖼️ IMAGE GENERATION REQUEST from:", number);
+      await sendTyping(body.instance, number);
+      
+      const prompt = text.replace(/generate image|create image|make a logo|generate a logo|create a poster|design a banner/gi, "").trim();
+      const result = await generateImage(body.instance, number, prompt);
+      
+      return res.sendStatus(200);
+    }
     // ==================== IMAGE VISION HANDLER ====================
     if (msg.message.imageMessage) {
       console.log("📷 IMAGE RECEIVED from:", number);
+      await sendTyping(body.instance, number);
       
       const base64 = await getMediaBase64(body.instance, msg.key.id);
       
@@ -397,6 +469,7 @@ app.post('/webhook', async (req, res) => {
     // ==================== PDF HANDLER ====================
     if (msg.message.documentMessage) {
       console.log("📄 PDF RECEIVED from:", number);
+      await sendTyping(body.instance, number);
       
       const base64 = await getMediaBase64(body.instance, msg.key.id);
       
@@ -423,6 +496,7 @@ app.post('/webhook', async (req, res) => {
     // ==================== VOICE-TO-TEXT HANDLER ====================
     if (msg.message.audioMessage) {
       console.log("🎙️ VOICE NOTE RECEIVED from:", number);
+      await sendTyping(body.instance, number);
       
       const base64 = await getMediaBase64(body.instance, msg.key.id);
       
@@ -451,6 +525,7 @@ app.post('/webhook', async (req, res) => {
     // ==================== YOUTUBE SUMMARY HANDLER ====================
     if (text && (text.includes("youtube.com") || text.includes("youtu.be"))) {
       console.log("▶️ YOUTUBE LINK RECEIVED from:", number);
+      await sendTyping(body.instance, number);
       
       const youtubeReply = await summarizeYouTube(number, text);
       
@@ -486,6 +561,8 @@ app.post('/webhook', async (req, res) => {
       );
       return res.sendStatus(200);
     }
+    // ==================== NORMAL TEXT WITH TYPING ====================
+    await sendTyping(body.instance, number);
     const reply = await askAI(number, text);
     await new Promise(r => setTimeout(r, 700));
     await axios.post(
