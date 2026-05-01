@@ -217,6 +217,26 @@ async function transcribeVoice(userId, audioBase64) {
     return null;
   }
 }
+// ==================== GET MEDIA BASE64 (NEEDED FOR PDF & VOICE) ====================
+async function getMediaBase64(instance, messageId) {
+  try {
+    const res = await axios.post(
+      `${process.env.EVO_URL}/chat/getBase64FromMediaMessage/${instance}`,
+      {
+        message: {
+          key: { id: messageId }
+        }
+      },
+      {
+        headers: { apikey: process.env.EVO_API_KEY }
+      }
+    );
+    return res.data.base64 || null;
+  } catch (err) {
+    console.log("MEDIA BASE64 ERROR:", err.response?.data || err.message);
+    return null;
+  }
+}
 // ============================================================
 // ---------------- CREATE INSTANCE ----------------
 app.post('/create-instance', async (req, res) => {
@@ -302,7 +322,7 @@ app.post('/webhook', async (req, res) => {
     processed.add(msgId);
     setTimeout(() => processed.delete(msgId), 60000);
     const sender = msg.key.remoteJid;
-   
+  
     // ==================== FIXED NUMBER EXTRACTION ====================
     let number = sender.replace(/[^0-9]/g, "");
     if (number.length === 10 && /^[6-9]/.test(number)) {
@@ -346,13 +366,13 @@ app.post('/webhook', async (req, res) => {
     if (msg.message.documentMessage) {
       console.log("📄 PDF RECEIVED from:", number);
       await sendTyping(body.instance, number);
-     
+    
       const base64 = await getMediaBase64(body.instance, msg.key.id);
-     
+    
       if (base64) {
         const filename = msg.message.documentMessage.fileName || "document.pdf";
         const pdfReply = await summarizePDF(number, base64, filename);
-       
+      
         await new Promise(r => setTimeout(r, 800));
         await axios.post(
           `${process.env.EVO_URL}/message/sendText/${body.instance}`,
@@ -373,12 +393,12 @@ app.post('/webhook', async (req, res) => {
     if (msg.message.audioMessage) {
       console.log("🎙️ VOICE NOTE RECEIVED from:", number);
       await sendTyping(body.instance, number);
-     
+    
       const base64 = await getMediaBase64(body.instance, msg.key.id);
-     
+    
       if (base64) {
         const transcribedText = await transcribeVoice(number, base64);
-       
+      
         if (transcribedText) {
           const reply = await askAI(number, transcribedText);
           await new Promise(r => setTimeout(r, 700));
