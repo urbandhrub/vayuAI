@@ -209,7 +209,8 @@ function resolveJid(key) {
 }
 
 function jidToNumber(jid) {
-  return (jid || '').replace(/@.*$/, '').replace(/[^0-9]/g, '');
+  // Strip @domain, then strip :device suffix (e.g. 919874076688:42 → 919874076688)
+  return (jid || '').replace(/@.*$/, '').replace(/:.*$/, '').replace(/[^0-9]/g, '');
 }
 
 function isLid(jid) {
