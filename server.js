@@ -5,9 +5,12 @@ const { Pool } = require('pg');
 const cors = require('cors');
 const ALLOWED_NUMBERS = require('./exceptionNumbers');
 
+const path = require('path');
 const app = express();
 app.use(express.json({ limit: '50mb' }));
 app.use(cors());
+// Serve index.html at root
+app.use(express.static(path.join(__dirname, 'public')));
 
 // ---------------- DATABASE ----------------
 const pool = new Pool({
@@ -255,6 +258,15 @@ async function handleWebhook(body) {
       console.log(`[DISCONNECTED] ${instanceName}`);
     }
     // 'connecting' state — no DB write needed, just log
+    // conflict = Render deploy overlap booted old session — auto-reconnect
+    if (state === 'conflict' || body.data?.statusReason === 401) {
+      await pool.query(
+        `UPDATE instances SET status='disconnected' WHERE instance_name=$1`,
+        [instanceName]
+      );
+      console.warn(`[CONFLICT] ${instanceName} — auto-reconnecting in 4s...`);
+      reconnectInstance(instanceName); // fire-and-forget, don't await
+    }
     return;
   }
 
@@ -360,10 +372,42 @@ setInterval(async () => {
   }
 }, 60 * 60 * 1000);
 
+// ---------------- RECONNECT (called after conflict/replaced) ----------------
+async function reconnectInstance(instanceName) {
+  try {
+    // Give WA 4 seconds to fully drop the old session
+    await new Promise(r => setTimeout(r, 4000));
+    await axios.delete(
+      `${process.env.EVO_URL}/instance/logout/${instanceName}`,
+      { headers: { apikey: process.env.EVO_API_KEY }, timeout: 10000 }
+    ).catch(() => {});
+    await new Promise(r => setTimeout(r, 2000));
+    await axios.get(
+      `${process.env.EVO_URL}/instance/connect/${instanceName}`,
+      { headers: { apikey: process.env.EVO_API_KEY }, timeout: 10000 }
+    );
+    console.log(`[RECONNECT] ✅ ${instanceName} reconnected`);
+  } catch (err) {
+    console.error(`[RECONNECT] ❌ ${instanceName}:`, err.message);
+  }
+}
+
 // ---------------- HEALTH ----------------
-app.get('/', (_, res) => res.send('VAYU LIVE 🚀'));
+app.get('/health', (_, res) => res.send('VAYU LIVE 🚀'));
+
+// ---------------- GRACEFUL SHUTDOWN ----------------
+// Prevents Render deploy overlap from leaving zombie connections
+let server;
+async function shutdown(signal) {
+  console.log(`[SHUTDOWN] ${signal} received — closing gracefully`);
+  if (server) server.close(() => console.log('[SHUTDOWN] HTTP server closed'));
+  await pool.end().catch(() => {});
+  process.exit(0);
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT',  () => shutdown('SIGINT'));
 
 // ---------------- START ----------------
 migrate().then(() => {
-  app.listen(process.env.PORT || 3000, () => console.log('SERVER LIVE 🔥'));
+  server = app.listen(process.env.PORT || 3000, () => console.log('SERVER LIVE 🔥'));
 });
