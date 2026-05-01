@@ -377,20 +377,23 @@ function extractMessage(data) {
 }
 
 // ---------------- LID → PHONE RESOLUTION ----------------
-// FIX: In LID mode, Evo sends remoteJid as @lid — resolve real phone from sender field
 function resolveNumber(body, msg) {
-  // 1. Try remoteJidAlt on key (set when addressingMode === 'lid')
-  if (msg?.key?.remoteJidAlt) {
-    const n = jidToNumber(msg.key.remoteJidAlt);
+  // 1. GROUP → participantAlt (real phone)
+  if (msg?.key?.participantAlt) {
+    const n = jidToNumber(msg.key.participantAlt);
     if (n) return n;
   }
-  // 2. Try body.sender (always the real phone JID from Evo)
+  // 2. PRIVATE → remoteJid
+  if (msg?.key?.remoteJid) {
+    const n = jidToNumber(msg.key.remoteJid);
+    if (n) return n;
+  }
+  // 3. fallback sender
   if (body?.sender) {
     const n = jidToNumber(body.sender);
     if (n) return n;
   }
-  // 3. Fallback to remoteJid (may be LID, filtered later)
-  return jidToNumber(msg?.key?.remoteJid);
+  return null;
 }
 
 // ---------------- WEBHOOK HANDLER ----------------
@@ -469,13 +472,8 @@ async function handleWebhook(body) {
 
   // FIX: use resolveNumber to correctly handle LID mode
   const number = resolveNumber(body, msg);
+  console.log("[DEBUG] NUMBER:", number);
   if (!number) return;
-
-  // FIX: skip pure LID jids that we couldn't resolve to a real phone number
-  if (number.length > 15) {
-    console.log(`[MSG] Skipping unresolved LID: ${number}`);
-    return;
-  }
 
   console.log(`[MSG] from=${number} jid=${msg.key.remoteJid} mode=${msg.key.addressingMode || 'normal'}`);
 
@@ -494,24 +492,16 @@ async function handleWebhook(body) {
     Date.now() < session.expiresAt
   ) return;
 
-  // Extract text — handle all message types
+  // Extract text — text-only messages
   const m = msg.message || {};
-  let text =
+  const text =
     m.conversation ||
-    m.extendedTextMessage?.text ||
-    m.imageMessage?.caption ||
-    m.videoMessage?.caption ||
-    m.documentMessage?.caption ||
-    m.buttonsResponseMessage?.selectedButtonId ||
-    m.listResponseMessage?.title ||
-    m.templateButtonReplyMessage?.selectedId ||
-    m.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson;
+    m.extendedTextMessage?.text;
 
-  if (!text?.trim()) {
-    console.log(`[MSG] No text extracted — message type: ${Object.keys(m)[0] || 'unknown'}`);
+  if (!text || !text.trim()) {
+    console.log("[SKIP] Non-text message ignored");
     return;
   }
-  text = text.trim();
 
   // Check instance expiry
   const db = await pool.query(
@@ -530,7 +520,7 @@ async function handleWebhook(body) {
     return;
   }
 
-  const reply = await askAI(number, text);
+  const reply = await askAI(number, text.trim());
   await axios.post(
     `${process.env.EVO_URL}/message/sendText/${instanceName}`,
     { number, text: reply },
