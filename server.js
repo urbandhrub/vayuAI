@@ -203,12 +203,17 @@ app.get('/status/:instance', async (req, res) => {
 const QR_LIMIT = 5;
 
 function resolveJid(key) {
-  if (key.addressingMode === 'lid' && key.remoteJidAlt) return key.remoteJidAlt;
+  // LID mode: remoteJidAlt has real phone JID when available
+  if (key.remoteJidAlt) return key.remoteJidAlt;
   return key.remoteJid;
 }
 
 function jidToNumber(jid) {
   return (jid || '').replace(/@.*$/, '').replace(/[^0-9]/g, '');
+}
+
+function isLid(jid) {
+  return (jid || '').endsWith('@lid');
 }
 
 // ---------------- WEBHOOK HANDLER ----------------
@@ -273,28 +278,46 @@ async function handleWebhook(body) {
   // ---- MESSAGES ----
   if (body.event !== 'messages.upsert') return;
 
+  // Evo sends both array form and flat form — handle both
   let msg = body.data?.messages?.[0];
   if (!msg && body.data?.key) msg = body.data;
-  if (!msg?.key || msg.key.fromMe) return;
+
+  // Hard filters — drop immediately
+  if (!msg?.key) return;
+  if (msg.key.fromMe === true) return;           // outgoing — our own reply, skip
+  if (!msg.message) return;                       // no message body (status updates, etc.)
+  if (msg.messageStubType) return;               // system messages (e.g. group join)
+
+  // Group messages — skip (only handle DMs)
+  const remoteJid = msg.key.remoteJid || '';
+  if (remoteJid.endsWith('@g.us')) return;
 
   const uniqueKey = `${instanceName}_${msg.key.id}`;
   if (processed.has(uniqueKey)) return;
   processed.add(uniqueKey);
   setTimeout(() => processed.delete(uniqueKey), 30000);
 
+  // sendJid = what we use to reply (original remoteJid — Evo resolves LID internally)
+  const sendJid = remoteJid;
+  // realJid = resolved for phone number extraction
   const realJid = resolveJid(msg.key);
   const number = jidToNumber(realJid);
-  if (!number) return;
 
-  console.log(`[MSG] from=${number} jid=${realJid} mode=${msg.key.addressingMode || 'normal'}`);
+  // LID fallback: use body.sender (instance owner JID) is WRONG for user identity
+  // Instead use the LID itself as a stable key — consistent per user across sessions
+  const userId = (number && !isLid(realJid)) ? number : jidToNumber(sendJid);
 
-  // SESSION LOCK
-  const existing = phoneSessions.get(number);
+  if (!userId || userId.length < 5) return;
+
+  console.log(`[MSG] userId=${userId} sendJid=${sendJid} realJid=${realJid}`);
+
+  // SESSION LOCK — lock per userId
+  const existing = phoneSessions.get(userId);
   if (!existing || Date.now() > existing.expiresAt) {
-    phoneSessions.set(number, { instance: instanceName, expiresAt: Date.now() + 30 * 60 * 1000 });
+    phoneSessions.set(userId, { instance: instanceName, expiresAt: Date.now() + 30 * 60 * 1000 });
   }
-  const session = phoneSessions.get(number);
-  if (!ALLOWED_NUMBERS.has(number) && session.instance !== instanceName && Date.now() < session.expiresAt) return;
+  const session = phoneSessions.get(userId);
+  if (!ALLOWED_NUMBERS.has(userId) && session.instance !== instanceName && Date.now() < session.expiresAt) return;
 
   // Extract text
   const m = msg.message || {};
@@ -318,19 +341,19 @@ async function handleWebhook(body) {
   if (!db.rows.length) return;
 
   const expiry = new Date(db.rows[0].expires_at);
-  if (!ALLOWED_NUMBERS.has(number) && Date.now() > expiry.getTime()) {
+  if (!ALLOWED_NUMBERS.has(userId) && Date.now() > expiry.getTime()) {
     await axios.post(
       `${process.env.EVO_URL}/message/sendText/${instanceName}`,
-      { number, text: 'Session khatam bhai 😅 — nayi QR generate karo aur wapas aao!' },
+      { number: sendJid, text: 'Session khatam bhai 😅 — nayi QR generate karo aur wapas aao!' },
       { headers: { apikey: process.env.EVO_API_KEY }, timeout: 10000 }
     );
     return;
   }
 
-  const reply = await askAI(number, text);
+  const reply = await askAI(userId, text);
   await axios.post(
     `${process.env.EVO_URL}/message/sendText/${instanceName}`,
-    { number, text: reply },
+    { number: sendJid, text: reply },
     { headers: { apikey: process.env.EVO_API_KEY }, timeout: 10000 }
   );
 }
