@@ -349,34 +349,25 @@ function extractMessage(data) {
   if (Array.isArray(data?.messages) && data.messages[0]?.key) return data.messages[0];
   return null;
 }
-// ---------------- LID → PHONE RESOLUTION (PERMANENT FIX) ----------------
+// ---------------- PERMANENT LID FIX (BULLETPROOF) ----------------
 function resolveNumber(body, msg) {
-  // 1. GROUP sender real phone (participantAlt)
-  if (msg?.key?.participantAlt) {
-    const n = jidToNumber(msg.key.participantAlt);
-    if (n && n.length >= 10 && n.length <= 15) return n;
-  }
-  // 2. PRIVATE / CHAT real phone (remoteJidAlt)
-  if (msg?.key?.remoteJidAlt) {
-    const n = jidToNumber(msg.key.remoteJidAlt);
-    if (n && n.length >= 10 && n.length <= 15) return n;
-  }
-  // 3. GROUP sender (participant - fallback)
-  if (msg?.key?.participant) {
-    const n = jidToNumber(msg.key.participant);
-    if (n && n.length >= 10 && n.length <= 15) return n;
-  }
-  // 4. PRIVATE / CHAT (remoteJid - fallback)
-  if (msg?.key?.remoteJid) {
-    const n = jidToNumber(msg.key.remoteJid);
-    if (n && n.length >= 10 && n.length <= 15) return n;
-  }
-  // 5. Evo sender field (always real phone)
-  if (body?.sender) {
-    const n = jidToNumber(body.sender);
-    if (n && n.length >= 10 && n.length <= 15) return n;
-  }
-  return null;
+  const tryGet = (jid) => {
+    if (!jid) return null;
+    const n = jidToNumber(jid);
+    return (n && n.length >= 10 && n.length <= 15) ? n : null;
+  };
+
+  // All possible real-phone sources (highest priority first)
+  return (
+    tryGet(msg?.key?.participantAlt) ||
+    tryGet(msg?.key?.remoteJidAlt) ||
+    tryGet(msg?.key?.participant) ||
+    tryGet(msg?.key?.remoteJid) ||
+    tryGet(body?.sender) ||
+    tryGet(body?.data?.sender) ||
+    tryGet(msg?.sender) ||
+    null
+  );
 }
 // ---------------- WEBHOOK HANDLER ----------------
 const QR_LIMIT = 5;
