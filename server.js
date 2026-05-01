@@ -80,37 +80,37 @@ async function askAI(userId, text) {
   }
 }
 
-// ---------------- INSTANCE ----------------
+// ---------------- STATE ----------------
 const activeSessions = new Map();
 const phoneSessions = new Map();
 const qrStore = new Map();
+const processed = new Set();
 
+// ---------------- CREATE INSTANCE ----------------
 app.post('/create-instance', async (req, res) => {
-
-  let { userId } = req.body;
-
-  // normalize number
-  userId = userId.replace(/[^0-9]/g, "");
-
-  const existing = activeSessions.get(userId);
-  if (existing && Date.now() < existing.expiresAt) {
-    return res.json({
-      success: true,
-      instance: existing.instance,
-      reused: true
-    });
-  }
-
-  const instanceName = `vayu_${userId}_${Date.now()}`;
-
-  // VALIDITY
-  const isPermanent = ALLOWED_NUMBERS.has(userId);
-
-  const expiry = isPermanent
-    ? new Date(Date.now() + 365 * 24 * 60 * 60 * 1000) // 1 year
-    : new Date(Date.now() + 60 * 60 * 1000); // 60 min
-
   try {
+    let { userId } = req.body;
+
+    // normalize number (important)
+    userId = (userId || '').toString().replace(/[^0-9]/g, "");
+
+    const existing = activeSessions.get(userId);
+    if (existing && Date.now() < existing.expiresAt) {
+      return res.json({
+        success: true,
+        instance: existing.instance,
+        reused: true
+      });
+    }
+
+    const instanceName = `vayu_${userId}_${Date.now()}`;
+
+    // VALIDITY
+    const isPermanent = ALLOWED_NUMBERS.has(userId);
+    const expiry = isPermanent
+      ? new Date(Date.now() + 365 * 24 * 60 * 60 * 1000) // 1 year
+      : new Date(Date.now() + 60 * 60 * 1000); // 60 min
+
     const evo = await axios.post(
       `${process.env.EVO_URL}/instance/create`,
       {
@@ -155,115 +155,123 @@ app.get('/get-qr/:instance', (req, res) => {
   res.json({ ready: !!qr, qr: qr || null });
 });
 
-// ---------------- WEBHOOK ----------------
-const processed = new Set();
-
-app.post('/webhook', async (req, res) => {
-  try {
-    const body = req.body;
-
-    // QR update
-    if (body.event === "qrcode.updated") {
-      const qr = body.data?.qrcode?.base64 || body.data?.qrcode;
-      if (qr) qrStore.set(body.instance, qr);
-      return res.sendStatus(200);
-    }
-
-    // ✅ ONLY real messages
-    if (body.event !== "messages.upsert") {
-      return res.sendStatus(200);
-    }
-
-    const msg = body.data?.messages?.[0];
-    if (!msg?.key) return res.sendStatus(200);
-
-    // ignore bot messages
-    if (msg.key.fromMe) return res.sendStatus(200);
-
-    const msgId = msg.key.id;
-    const uniqueKey = body.instance + "_" + msgId;
-
-    // dedupe fix
-    if (processed.has(uniqueKey)) return res.sendStatus(200);
-    processed.add(uniqueKey);
-    setTimeout(() => processed.delete(uniqueKey), 30000);
-
-    const number = msg.key.remoteJid.replace(/[^0-9]/g, "");
-
-    // SESSION LOCK
-    const existing = phoneSessions.get(number);
-    if (!existing || Date.now() > existing.expiresAt) {
-      phoneSessions.set(number, {
-        instance: body.instance,
-        expiresAt: Date.now() + 30 * 60 * 1000
-      });
-    }
-
-    const session = phoneSessions.get(number);
-
-    if (
-      !ALLOWED_NUMBERS.has(number) &&
-      session.instance !== body.instance &&
-      Date.now() < session.expiresAt
-    ) {
-      return res.sendStatus(200);
-    }
-
-    // TEXT extraction
-    const m = msg.message || {};
-
-    let text =
-      m.conversation ||
-      m.extendedTextMessage?.text ||
-      m.imageMessage?.caption ||
-      m.videoMessage?.caption ||
-      m.documentMessage?.caption ||
-      m.buttonsResponseMessage?.selectedButtonId ||
-      m.listResponseMessage?.title;
-
-    if (!text) return res.sendStatus(200);
-
-    text = text.trim();
-
-    // EXPIRY CHECK
-    const db = await pool.query(
-      'SELECT expires_at FROM instances WHERE instance_name = $1',
-      [body.instance]
-    );
-
-    if (!db.rows.length) return res.sendStatus(200);
-
-    const expiry = new Date(db.rows[0].expires_at);
-
-    if (
-      !ALLOWED_NUMBERS.has(number) &&
-      Date.now() > expiry.getTime()
-    ) {
-      await axios.post(
-        `${process.env.EVO_URL}/message/sendText/${body.instance}`,
-        {
-          number,
-          text: "Session expired. Generate new QR to continue."
-        },
-        { headers: { apikey: process.env.EVO_API_KEY } }
-      );
-
-      return res.sendStatus(200);
-    }
-
-    // AI
-    const reply = await askAI(number, text);
-
-    await axios.post(
-      `${process.env.EVO_URL}/message/sendText/${body.instance}`,
-      { number, text: reply },
-      { headers: { apikey: process.env.EVO_API_KEY } }
-    );
-
-  } catch (err) {
-    console.error("WEBHOOK ERROR:", err.response?.data || err.message);
+// ---------------- COMMON WEBHOOK HANDLER ----------------
+async function handleWebhook(body) {
+  // QR updates
+  if (body.event === "qrcode.updated") {
+    const qr = body.data?.qrcode?.base64 || body.data?.qrcode;
+    if (qr) qrStore.set(body.instance, qr);
+    return;
   }
 
+  // ONLY process real incoming messages
+  if (body.event !== "messages.upsert") return;
+
+  const msg = body.data?.messages?.[0];
+  if (!msg?.key) return;
+
+  // ignore bot messages
+  if (msg.key.fromMe) return;
+
+  // dedupe
+  const uniqueKey = `${body.instance}_${msg.key.id}`;
+  if (processed.has(uniqueKey)) return;
+  processed.add(uniqueKey);
+  setTimeout(() => processed.delete(uniqueKey), 30000);
+
+  const number = (msg.key.remoteJid || '').replace(/[^0-9]/g, "");
+
+  // SESSION LOCK
+  const existing = phoneSessions.get(number);
+  if (!existing || Date.now() > existing.expiresAt) {
+    phoneSessions.set(number, {
+      instance: body.instance,
+      expiresAt: Date.now() + 30 * 60 * 1000
+    });
+  }
+
+  const session = phoneSessions.get(number);
+
+  if (
+    !ALLOWED_NUMBERS.has(number) &&
+    session.instance !== body.instance &&
+    Date.now() < session.expiresAt
+  ) {
+    return;
+  }
+
+  // TEXT extraction
+  const m = msg.message || {};
+  let text =
+    m.conversation ||
+    m.extendedTextMessage?.text ||
+    m.imageMessage?.caption ||
+    m.videoMessage?.caption ||
+    m.documentMessage?.caption ||
+    m.buttonsResponseMessage?.selectedButtonId ||
+    m.listResponseMessage?.title;
+
+  if (!text) return;
+  text = text.trim();
+
+  // EXPIRY
+  const db = await pool.query(
+    'SELECT expires_at FROM instances WHERE instance_name = $1',
+    [body.instance]
+  );
+
+  if (!db.rows.length) return;
+
+  const expiry = new Date(db.rows[0].expires_at);
+
+  if (
+    !ALLOWED_NUMBERS.has(number) &&
+    Date.now() > expiry.getTime()
+  ) {
+    await axios.post(
+      `${process.env.EVO_URL}/message/sendText/${body.instance}`,
+      {
+        number,
+        text: "Session expired. Generate new QR to continue."
+      },
+      { headers: { apikey: process.env.EVO_API_KEY } }
+    );
+    return;
+  }
+
+  // AI
+  const reply = await askAI(number, text);
+
+  await axios.post(
+    `${process.env.EVO_URL}/message/sendText/${body.instance}`,
+    { number, text: reply },
+    { headers: { apikey: process.env.EVO_API_KEY } }
+  );
+}
+
+// ---------------- WEBHOOK ROUTES (ALL MAPPED) ----------------
+app.post('/webhook', async (req, res) => {
+  await handleWebhook(req.body);
+  res.sendStatus(200);
+});
+
+app.post('/webhook/messages-upsert', async (req, res) => {
+  await handleWebhook(req.body);
+  res.sendStatus(200);
+});
+
+app.post('/webhook/messages-update', async (req, res) => {
+  await handleWebhook(req.body); // ignored by filter unless upsert
+  res.sendStatus(200);
+});
+
+app.post('/webhook/chats-upsert', async (req, res) => {
+  await handleWebhook(req.body);
+  res.sendStatus(200);
+});
+
+app.post('/webhook/qrcode-updated', async (req, res) => {
+  await handleWebhook(req.body);
   res.sendStatus(200);
 });
 
