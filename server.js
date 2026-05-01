@@ -382,20 +382,21 @@ function isLid(jid) {
 }
 
 function resolveNumber(body, msg) {
-  // 1. GROUP → participantAlt (real phone, never a LID)
+  // 1. GROUP → participantAlt (real phone JID set by Evo for group messages)
   if (msg?.key?.participantAlt) {
     const n = jidToNumber(msg.key.participantAlt);
     if (n) return n;
   }
-  // 2. body.sender — always the real phone JID from Evo (e.g. 918240801921@s.whatsapp.net)
-  //    Check this BEFORE remoteJid because remoteJid may be a @lid in private chats
-  if (body?.sender && !isLid(body.sender)) {
-    const n = jidToNumber(body.sender);
-    if (n) return n;
-  }
-  // 3. PRIVATE → remoteJid only if it is NOT a LID
+  // 2. remoteJid — Evo resolves LID → real phone here for messages.upsert
+  //    e.g. '919874076688@s.whatsapp.net' even when addressingMode === 'lid'
+  //    Only skip if it is still a raw @lid (unresolved)
   if (msg?.key?.remoteJid && !isLid(msg.key.remoteJid)) {
     const n = jidToNumber(msg.key.remoteJid);
+    if (n) return n;
+  }
+  // 3. remoteJidAlt as final fallback
+  if (msg?.key?.remoteJidAlt && !isLid(msg.key.remoteJidAlt)) {
+    const n = jidToNumber(msg.key.remoteJidAlt);
     if (n) return n;
   }
   return null;
@@ -458,11 +459,12 @@ async function handleWebhook(body) {
   // ---- MESSAGES ----
   if (!event.includes("messages")) return;
 
-  // FIX: handle all Evo v2 envelope shapes including LID mode
+  // Evo v2: body.data IS the message envelope (has .key directly on it)
+  // body.data.message = WA message content (conversation text), NOT a wrapper
   const msg =
-    body.data?.message ||
+    (body.data?.key ? body.data : null) ||
     body.data?.messages?.[0] ||
-    body.data;
+    null;
 
   if (!msg?.key) {
     console.log(`[WH] messages event but no message key found — skipping`);
