@@ -38,6 +38,7 @@ async function saveMessage(userId, role, content) {
   );
 }
 // ---------------- AI ----------------
+// ---------------- AI (PERMANENT FIX - RETRY + LONGER TIMEOUT) ----------------
 async function askAI(userId, text) {
   const history = await getHistory(userId);
   const messages = [
@@ -172,8 +173,9 @@ HUMOR INTELLIGENCE (CRITICAL):
     ...history,
     { role: "user", content: text }
   ];
-  try {
-    const res = await axios.post(
+
+  const callGroq = async () => {
+    return axios.post(
       "https://api.groq.com/openai/v1/chat/completions",
       {
         model: "llama-3.3-70b-versatile",
@@ -183,16 +185,30 @@ HUMOR INTELLIGENCE (CRITICAL):
       },
       {
         headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
-        timeout: 15000
+        timeout: 25000
       }
     );
+  };
+
+  try {
+    const res = await callGroq();
     const reply = res.data.choices[0].message.content;
     await saveMessage(userId, "user", text);
     await saveMessage(userId, "assistant", reply);
     return reply;
   } catch (err) {
-    console.error("AI ERROR:", err.response?.data || err.message);
-    return "Ek second, Sir — kuch technical issue aa gaya. Dobara bhejo please.";
+    console.error("AI ERROR (first try):", err.response?.data || err.message);
+    // One automatic retry
+    try {
+      const res2 = await callGroq();
+      const reply2 = res2.data.choices[0].message.content;
+      await saveMessage(userId, "user", text);
+      await saveMessage(userId, "assistant", reply2);
+      return reply2;
+    } catch (err2) {
+      console.error("AI ERROR (retry failed):", err2.response?.data || err2.message);
+      return "Ek second, Sir — kuch technical issue aa gaya. Dobara bhejo please.";
+    }
   }
 }
 // ---------------- DELETE INSTANCE ----------------
