@@ -349,15 +349,14 @@ function extractMessage(data) {
   if (Array.isArray(data?.messages) && data.messages[0]?.key) return data.messages[0];
   return null;
 }
-// ---------------- PERMANENT LID FIX (BULLETPROOF) ----------------
+// ---------------- PERMANENT LID FIX (FINAL) ----------------
 function resolveNumber(body, msg) {
   const tryGet = (jid) => {
     if (!jid) return null;
     const n = jidToNumber(jid);
-    return (n && n.length >= 10 && n.length <= 15) ? n : null;
+    return (n && n.length >= 10 && n.length <= 13) ? n : null;   // ← 13 max = skips all LID
   };
 
-  // All possible real-phone sources (highest priority first)
   return (
     tryGet(msg?.key?.participantAlt) ||
     tryGet(msg?.key?.remoteJidAlt) ||
@@ -420,7 +419,6 @@ async function handleWebhook(body) {
   }
   // ---- MESSAGES ----
   if (!event.includes("messages")) return;
-  // FIX: handle all Evo v2 envelope shapes including LID mode
   const msg =
     body.data?.message ||
     body.data?.messages?.[0] ||
@@ -434,12 +432,13 @@ async function handleWebhook(body) {
   if (processed.has(uniqueKey)) return;
   processed.add(uniqueKey);
   setTimeout(() => processed.delete(uniqueKey), 30000);
-  // FIX: use resolveNumber to correctly handle LID mode
+
   const number = resolveNumber(body, msg);
   console.log("[DEBUG] NUMBER:", number);
   if (!number) return;
+
   console.log(`[MSG] from=${number} jid=${msg.key.remoteJid} mode=${msg.key.addressingMode || 'normal'}`);
-  // SESSION LOCK
+
   const existing = phoneSessions.get(number);
   if (!existing || Date.now() > existing.expiresAt) {
     phoneSessions.set(number, {
@@ -453,7 +452,7 @@ async function handleWebhook(body) {
     session.instance !== instanceName &&
     Date.now() < session.expiresAt
   ) return;
-  // Extract text — handle all message types
+
   const m = msg.message || {};
   let text =
     m.conversation ||
@@ -463,7 +462,7 @@ async function handleWebhook(body) {
     return;
   }
   text = text.trim();
-  // Check instance expiry
+
   const db = await pool.query(
     `SELECT expires_at FROM instances WHERE instance_name = $1`,
     [instanceName]
@@ -478,6 +477,7 @@ async function handleWebhook(body) {
     );
     return;
   }
+
   const reply = await askAI(number, text);
   await axios.post(
     `${process.env.EVO_URL}/message/sendText/${instanceName}`,
