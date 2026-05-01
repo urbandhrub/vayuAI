@@ -47,7 +47,19 @@ const SYSTEM_PROMPT = `You are Dhrub. AI, automation, content & PR guy. Hinglish
 
 // ---------------- AI ----------------
 async function askAI(userId, text) {
-  const history = await getHistory(userId);
+  // Build history — filter to only valid roles to avoid Groq rejecting bad turns
+  let history = [];
+  try {
+    const raw = await getHistory(userId);
+    history = raw.filter(m => 
+      m && (m.role === 'user' || m.role === 'assistant') && 
+      typeof m.content === 'string' && m.content.trim().length > 0
+    );
+  } catch (e) {
+    console.error('[HISTORY ERROR]', e.message);
+  }
+
+  // Groq llama doesn't support system role — use user/assistant seed
   const messages = [
     { role: "user", content: SYSTEM_PROMPT },
     { role: "assistant", content: "Got it — I'm Dhrub. Let's build." },
@@ -66,17 +78,57 @@ async function askAI(userId, text) {
       },
       {
         headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
-        timeout: 15000,
+        timeout: 20000,
       }
     );
 
-    const reply = res.data.choices[0].message.content;
+    const reply = res.data.choices[0]?.message?.content;
+    if (!reply) throw new Error('Empty response from Groq');
+    
+    // Save only after confirmed reply
     await saveMessage(userId, "user", text);
     await saveMessage(userId, "assistant", reply);
     return reply;
+
   } catch (err) {
-    console.error("AI ERROR:", err.response?.data || err.message);
-    return "zzz 😴";
+    const errData = err.response?.data;
+    console.error("AI ERROR:", JSON.stringify(errData) || err.message);
+    
+    // If rate limited — short human message instead of zzz
+    if (err.response?.status === 429) {
+      return "Ek second yaar, bahut busy hoon abhi 😅 — thoda ruk, dobara bhej!";
+    }
+    // If bad request (likely history corruption) — retry without history
+    if (err.response?.status === 400) {
+      try {
+        const res2 = await axios.post(
+          "https://api.groq.com/openai/v1/chat/completions",
+          {
+            model: "llama-3.3-70b-versatile",
+            messages: [
+              { role: "user", content: SYSTEM_PROMPT },
+              { role: "assistant", content: "Got it — I'm Dhrub. Let's build." },
+              { role: "user", content: text }
+            ],
+            temperature: 0.85,
+            max_tokens: 400,
+          },
+          {
+            headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
+            timeout: 20000,
+          }
+        );
+        const reply2 = res2.data.choices[0]?.message?.content;
+        if (reply2) {
+          await saveMessage(userId, "user", text);
+          await saveMessage(userId, "assistant", reply2);
+          return reply2;
+        }
+      } catch (e2) {
+        console.error("AI RETRY ERROR:", e2.message);
+      }
+    }
+    return "Ek second — system hiccup. Dobara bhej! 🙏";
   }
 }
 
