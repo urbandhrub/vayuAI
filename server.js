@@ -238,20 +238,23 @@ async function handleWebhook(body) {
 
   // ---- CONNECTION UPDATE ----
   if (body.event === 'connection.update') {
-    const state = body.data?.state;
+    // Evo v2 sends state flat at body.data.state — fallback to nested just in case
+    const state = body.data?.state || body.data?.instance?.state;
+    console.log(`[CONN] ${instanceName} state=${state}`);
     if (state === 'open') {
       await pool.query(
         `UPDATE instances SET status='connected', qr_count=0, qr_base64=NULL WHERE instance_name=$1`,
         [instanceName]
       );
-      console.log(`[CONNECTED] ${instanceName}`);
-    } else if (state === 'close') {
+      console.log(`[CONNECTED] ✅ ${instanceName}`);
+    } else if (state === 'close' || state === 'refused') {
       await pool.query(
         `UPDATE instances SET status='disconnected' WHERE instance_name=$1`,
         [instanceName]
       );
       console.log(`[DISCONNECTED] ${instanceName}`);
     }
+    // 'connecting' state — no DB write needed, just log
     return;
   }
 
