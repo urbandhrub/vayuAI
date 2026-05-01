@@ -163,7 +163,7 @@ async function generateImage(instance, number, prompt) {
   try {
     const encodedPrompt = encodeURIComponent(prompt);
     const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&model=flux&seed=42`;
-   
+  
     await axios.post(
       `${process.env.EVO_URL}/message/sendMedia/${instance}`,
       {
@@ -182,21 +182,30 @@ async function generateImage(instance, number, prompt) {
     return "Sorry Sir, I couldn't generate the image right now. Please try again later.";
   }
 }
-// ==================== IMAGE VISION FEATURE ====================
-async function getMediaBase64(instance, messageId) {
+// ==================== IMAGE VISION FEATURE (FIXED) ====================
+async function getMediaBase64(instance, messageId, remoteJid) {
   try {
     const res = await axios.post(
       `${process.env.EVO_URL}/chat/getBase64FromMediaMessage/${instance}`,
       {
         message: {
-          key: { id: messageId }
+          key: { 
+            id: messageId,
+            remoteJid: remoteJid 
+          }
         }
       },
       {
         headers: { apikey: process.env.EVO_API_KEY }
       }
     );
-    return res.data.base64 || null;
+    
+    if (res.data && res.data.base64) {
+      return res.data.base64;
+    }
+    
+    console.log("Trying alternative method for image...");
+    return null;
   } catch (err) {
     console.log("MEDIA BASE64 ERROR:", err.response?.data || err.message);
     return null;
@@ -243,9 +252,9 @@ async function summarizePDF(userId, pdfBase64, filename = "document.pdf") {
     const pdf = require('pdf-parse');
     const pdfBuffer = Buffer.from(pdfBase64, 'base64');
     const data = await pdf(pdfBuffer);
-   
+  
     const text = data.text.slice(0, 8000);
-   
+  
     const response = await axios.post(
       "https://api.groq.com/openai/v1/chat/completions",
       {
@@ -272,7 +281,7 @@ async function summarizePDF(userId, pdfBase64, filename = "document.pdf") {
 async function transcribeVoice(userId, audioBase64) {
   try {
     const audioBuffer = Buffer.from(audioBase64, 'base64');
-   
+  
     const formData = new (require('form-data'))();
     formData.append('file', audioBuffer, {
       filename: 'voice.ogg',
@@ -341,13 +350,12 @@ app.post('/create-instance', async (req, res) => {
     });
   }
   const instanceName = `vayu_${userId}_${Date.now()}`;
-  
+ 
   // 🟢 FIX: PERMANENT ACCESS FOR EXCEPTION NUMBERS
   const isPermanent = ALLOWED_NUMBERS.has(userId);
-  const expiry = isPermanent 
-    ? new Date(Date.now() + 365 * 24 * 60 * 60 * 1000)   // 1 YEAR (forever)
-    : new Date(Date.now() + 60 * 60 * 1000);            // 60 MIN for normal users
-
+  const expiry = isPermanent
+    ? new Date(Date.now() + 365 * 24 * 60 * 60 * 1000) // 1 YEAR (forever)
+    : new Date(Date.now() + 60 * 60 * 1000); // 60 MIN for normal users
   try {
     const evo = await axios.post(
       `${process.env.EVO_URL}/instance/create`,
@@ -414,7 +422,7 @@ app.post('/webhook', async (req, res) => {
     processed.add(msgId);
     setTimeout(() => processed.delete(msgId), 60000);
     const sender = msg.key.remoteJid;
-   
+  
     // ==================== FIXED NUMBER EXTRACTION ====================
     let number = sender.replace(/[^0-9]/g, "");
     if (number.length === 10 && /^[6-9]/.test(number)) {
@@ -466,23 +474,23 @@ app.post('/webhook', async (req, res) => {
     )) {
       console.log("🖼️ IMAGE GENERATION REQUEST from:", number);
       await sendTyping(body.instance, number);
-     
+    
       const prompt = text.replace(/generate image|create image|make a logo|generate a logo|create a poster|design a banner/gi, "").trim();
       const result = await generateImage(body.instance, number, prompt);
-     
+    
       return res.sendStatus(200);
     }
-    // ==================== IMAGE VISION HANDLER ====================
+    // ==================== IMAGE VISION HANDLER (FIXED) ====================
     if (msg.message.imageMessage) {
       console.log("📷 IMAGE RECEIVED from:", number);
       await sendTyping(body.instance, number);
-     
-      const base64 = await getMediaBase64(body.instance, msg.key.id);
-     
+    
+      const base64 = await getMediaBase64(body.instance, msg.key.id, sender);
+    
       if (base64) {
         const caption = msg.message.imageMessage.caption || "";
         const visionReply = await analyzeImage(number, base64, caption);
-       
+      
         await new Promise(r => setTimeout(r, 800));
         await axios.post(
           `${process.env.EVO_URL}/message/sendText/${body.instance}`,
@@ -493,7 +501,10 @@ app.post('/webhook', async (req, res) => {
       } else {
         await axios.post(
           `${process.env.EVO_URL}/message/sendText/${body.instance}`,
-          { number, text: "Sorry Sir, I couldn't read the image. Please try sending it again." },
+          { 
+            number, 
+            text: "Sorry Sir, I couldn't read this image clearly. Please try sending a clearer photo or with better lighting." 
+          },
           { headers: { apikey: process.env.EVO_API_KEY } }
         );
         return res.sendStatus(200);
@@ -503,13 +514,13 @@ app.post('/webhook', async (req, res) => {
     if (msg.message.documentMessage) {
       console.log("📄 PDF RECEIVED from:", number);
       await sendTyping(body.instance, number);
-     
+    
       const base64 = await getMediaBase64(body.instance, msg.key.id);
-     
+    
       if (base64) {
         const filename = msg.message.documentMessage.fileName || "document.pdf";
         const pdfReply = await summarizePDF(number, base64, filename);
-       
+      
         await new Promise(r => setTimeout(r, 800));
         await axios.post(
           `${process.env.EVO_URL}/message/sendText/${body.instance}`,
@@ -530,12 +541,12 @@ app.post('/webhook', async (req, res) => {
     if (msg.message.audioMessage) {
       console.log("🎙️ VOICE NOTE RECEIVED from:", number);
       await sendTyping(body.instance, number);
-     
+    
       const base64 = await getMediaBase64(body.instance, msg.key.id);
-     
+    
       if (base64) {
         const transcribedText = await transcribeVoice(number, base64);
-       
+      
         if (transcribedText) {
           const reply = await askAI(number, transcribedText);
           await new Promise(r => setTimeout(r, 700));
@@ -559,9 +570,9 @@ app.post('/webhook', async (req, res) => {
     if (text && (text.includes("youtube.com") || text.includes("youtu.be"))) {
       console.log("▶️ YOUTUBE LINK RECEIVED from:", number);
       await sendTyping(body.instance, number);
-     
+    
       const youtubeReply = await summarizeYouTube(number, text);
-     
+    
       await new Promise(r => setTimeout(r, 800));
       await axios.post(
         `${process.env.EVO_URL}/message/sendText/${body.instance}`,
