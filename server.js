@@ -37,8 +37,7 @@ async function saveMessage(userId, role, content) {
     [userId, role, content]
   );
 }
-// ---------------- AI ----------------
-// ---------------- AI (PERMANENT FIX - RETRY + LONGER TIMEOUT) ----------------
+// ---------------- AI (RATE-LIMIT HARDENED) ----------------
 async function askAI(userId, text) {
   const history = await getHistory(userId);
   const messages = [
@@ -174,42 +173,37 @@ HUMOR INTELLIGENCE (CRITICAL):
     { role: "user", content: text }
   ];
 
-  const callGroq = async () => {
-    return axios.post(
-      "https://api.groq.com/openai/v1/chat/completions",
-      {
-        model: "llama-3.3-70b-versatile",
-        messages,
-        temperature: 0.9,
-        max_tokens: 400
-      },
-      {
-        headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
-        timeout: 25000
-      }
-    );
-  };
+  const callGroq = async () => axios.post(
+    "https://api.groq.com/openai/v1/chat/completions",
+    { model: "llama-3.3-70b-versatile", messages, temperature: 0.9, max_tokens: 400 },
+    { headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` }, timeout: 30000 }
+  );
 
-  try {
-    const res = await callGroq();
-    const reply = res.data.choices[0].message.content;
-    await saveMessage(userId, "user", text);
-    await saveMessage(userId, "assistant", reply);
-    return reply;
-  } catch (err) {
-    console.error("AI ERROR (first try):", err.response?.data || err.message);
-    // One automatic retry
+  for (let attempt = 1; attempt <= 5; attempt++) {
     try {
-      const res2 = await callGroq();
-      const reply2 = res2.data.choices[0].message.content;
+      const res = await callGroq();
+      const reply = res.data.choices[0].message.content;
       await saveMessage(userId, "user", text);
-      await saveMessage(userId, "assistant", reply2);
-      return reply2;
-    } catch (err2) {
-      console.error("AI ERROR (retry failed):", err2.response?.data || err2.message);
-      return "Ek second, Sir — kuch technical issue aa gaya. Dobara bhejo please.";
+      await saveMessage(userId, "assistant", reply);
+      return reply;
+    } catch (err) {
+      const status = err.response?.status;
+      const isRateLimit = status === 429;
+      
+      console.error(`AI ERROR (attempt ${attempt}/${5})${isRateLimit ? ' [RATE LIMITED]' : ''}:`, 
+        err.response?.data || err.message);
+
+      if (attempt < 5) {
+        // Exponential backoff: 1s, 2s, 4s, 8s, 16s + random jitter
+        const delay = Math.pow(2, attempt) * 1000 + Math.random() * 500;
+        console.log(`[RATE LIMIT] Waiting ${Math.round(delay/1000)}s before retry...`);
+        await new Promise(r => setTimeout(r, delay));
+      }
     }
   }
+
+  // Final fallback — still helpful instead of generic error
+  return "Sir, Groq is currently rate-limited. Please wait 30-60 seconds and send your message again — I’ll reply properly then.";
 }
 // ---------------- DELETE INSTANCE ----------------
 async function deleteInstance(instanceName) {
@@ -251,15 +245,9 @@ async function registerWebhook(instanceName) {
 }
 // ---------------- DB MIGRATION ----------------
 async function migrate() {
-  await pool.query(`
-    ALTER TABLE instances ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'pending'
-  `).catch(() => {});
-  await pool.query(`
-    ALTER TABLE instances ADD COLUMN IF NOT EXISTS qr_count INTEGER DEFAULT 0
-  `).catch(() => {});
-  await pool.query(`
-    ALTER TABLE instances ADD COLUMN IF NOT EXISTS qr_base64 TEXT
-  `).catch(() => {});
+  await pool.query(`ALTER TABLE instances ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'pending'`).catch(() => {});
+  await pool.query(`ALTER TABLE instances ADD COLUMN IF NOT EXISTS qr_count INTEGER DEFAULT 0`).catch(() => {});
+  await pool.query(`ALTER TABLE instances ADD COLUMN IF NOT EXISTS qr_base64 TEXT`).catch(() => {});
 }
 // ---------------- CREATE INSTANCE ----------------
 app.post('/create-instance', async (req, res) => {
@@ -267,22 +255,14 @@ app.post('/create-instance', async (req, res) => {
     let { userId } = req.body;
     userId = (userId || '').toString().replace(/[^0-9]/g, "");
     if (!userId) return res.status(400).json({ error: "userId required" });
-    const dbCheck = await pool.query(
-      `SELECT instance_name, status, expires_at FROM instances WHERE id = $1`,
-      [userId]
-    );
+    const dbCheck = await pool.query(`SELECT instance_name, status, expires_at FROM instances WHERE id = $1`, [userId]);
     if (dbCheck.rows.length) {
       const row = dbCheck.rows[0];
       const notExpired = new Date(row.expires_at) > new Date();
       if (row.status === 'connected' && notExpired) {
         try {
-          const statusRes = await axios.get(
-            `${process.env.EVO_URL}/instance/connectionState/${row.instance_name}`,
-            { headers: { apikey: process.env.EVO_API_KEY }, timeout: 8000 }
-          );
-          if (statusRes.data?.instance?.state === 'open') {
-            return res.json({ success: true, instance: row.instance_name, reused: true });
-          }
+          const statusRes = await axios.get(`${process.env.EVO_URL}/instance/connectionState/${row.instance_name}`, { headers: { apikey: process.env.EVO_API_KEY }, timeout: 8000 });
+          if (statusRes.data?.instance?.state === 'open') return res.json({ success: true, instance: row.instance_name, reused: true });
         } catch (_) {}
         await deleteInstance(row.instance_name);
       } else if (notExpired && row.status !== 'connected') {
@@ -293,23 +273,11 @@ app.post('/create-instance', async (req, res) => {
     }
     const instanceName = `vayu_${userId}_${Date.now()}`;
     const isPermanent = ALLOWED_NUMBERS.has(userId);
-    const expiry = isPermanent
-      ? new Date(Date.now() + 365 * 24 * 60 * 60 * 1000)
-      : new Date(Date.now() + 60 * 60 * 1000);
-    const evo = await axios.post(
-      `${process.env.EVO_URL}/instance/create`,
-      { instanceName, integration: "WHATSAPP-BAILEYS", qrcode: true },
-      { headers: { apikey: process.env.EVO_API_KEY }, timeout: 15000 }
-    );
+    const expiry = isPermanent ? new Date(Date.now() + 365 * 24 * 60 * 60 * 1000) : new Date(Date.now() + 60 * 60 * 1000);
+    const evo = await axios.post(`${process.env.EVO_URL}/instance/create`, { instanceName, integration: "WHATSAPP-BAILEYS", qrcode: true }, { headers: { apikey: process.env.EVO_API_KEY }, timeout: 15000 });
     const initialQr = evo.data?.qrcode?.base64 || null;
     await registerWebhook(instanceName);
-    await pool.query(
-      `INSERT INTO instances (id, instance_name, status, expires_at, qr_count, qr_base64)
-       VALUES ($1, $2, 'pending', $3, 0, $4)
-       ON CONFLICT (id)
-       DO UPDATE SET instance_name=$2, status='pending', expires_at=$3, qr_count=0, qr_base64=$4`,
-      [userId, instanceName, expiry, initialQr]
-    );
+    await pool.query(`INSERT INTO instances (id, instance_name, status, expires_at, qr_count, qr_base64) VALUES ($1, $2, 'pending', $3, 0, $4) ON CONFLICT (id) DO UPDATE SET instance_name=$2, status='pending', expires_at=$3, qr_count=0, qr_base64=$4`, [userId, instanceName, expiry, initialQr]);
     res.json({ success: true, instance: instanceName, qr: initialQr, expires: expiry });
   } catch (err) {
     console.error("CREATE ERROR:", err.response?.data || err.message);
@@ -319,70 +287,32 @@ app.post('/create-instance', async (req, res) => {
 // ---------------- GET QR ----------------
 app.get('/get-qr/:instance', async (req, res) => {
   try {
-    const result = await pool.query(
-      `SELECT qr_base64, status FROM instances WHERE instance_name = $1`,
-      [req.params.instance]
-    );
+    const result = await pool.query(`SELECT qr_base64, status FROM instances WHERE instance_name = $1`, [req.params.instance]);
     if (!result.rows.length) return res.json({ ready: false, qr: null });
     const { qr_base64, status } = result.rows[0];
     if (status === 'connected') return res.json({ ready: true, connected: true, qr: null });
     res.json({ ready: !!qr_base64, qr: qr_base64 || null });
-  } catch (err) {
-    res.json({ ready: false, qr: null });
-  }
+  } catch (err) { res.json({ ready: false, qr: null }); }
 });
 // ---------------- STATUS ----------------
 app.get('/status/:instance', async (req, res) => {
   try {
-    const result = await pool.query(
-      `SELECT status, expires_at FROM instances WHERE instance_name = $1`,
-      [req.params.instance]
-    );
+    const result = await pool.query(`SELECT status, expires_at FROM instances WHERE instance_name = $1`, [req.params.instance]);
     if (!result.rows.length) return res.json({ status: 'unknown' });
     res.json(result.rows[0]);
-  } catch (err) {
-    res.json({ status: 'error' });
-  }
+  } catch (err) { res.json({ status: 'error' }); }
 });
 // ---------------- HELPERS ----------------
-function resolveJid(key) {
-  if (key.addressingMode === 'lid' && key.remoteJidAlt) {
-    return key.remoteJidAlt;
-  }
-  return key.remoteJid;
-}
-function jidToNumber(jid) {
-  return (jid || '').replace(/@.*$/, '').replace(/[^0-9]/g, '');
-}
+function resolveJid(key) { if (key.addressingMode === 'lid' && key.remoteJidAlt) return key.remoteJidAlt; return key.remoteJid; }
+function jidToNumber(jid) { return (jid || '').replace(/@.*$/, '').replace(/[^0-9]/g, ''); }
 // ---------------- NORMALIZE EVENT NAME ----------------
-function normalizeEvent(event) {
-  return (event || '').toLowerCase().replace(/_/g, '.');
-}
+function normalizeEvent(event) { return (event || '').toLowerCase().replace(/_/g, '.'); }
 // ---------------- EXTRACT MESSAGE ----------------
-function extractMessage(data) {
-  if (data?.message?.key) return data.message;
-  if (data?.key) return data;
-  if (Array.isArray(data?.messages) && data.messages[0]?.key) return data.messages[0];
-  return null;
-}
+function extractMessage(data) { if (data?.message?.key) return data.message; if (data?.key) return data; if (Array.isArray(data?.messages) && data.messages[0]?.key) return data.messages[0]; return null; }
 // ---------------- PERMANENT LID FIX ----------------
 function resolveNumber(body, msg) {
-  const tryGet = (jid) => {
-    if (!jid) return null;
-    const n = jidToNumber(jid);
-    return (n && n.length >= 10 && n.length <= 13) ? n : null;
-  };
-
-  return (
-    tryGet(msg?.key?.participantAlt) ||
-    tryGet(msg?.key?.remoteJidAlt) ||
-    tryGet(msg?.key?.participant) ||
-    tryGet(msg?.key?.remoteJid) ||
-    tryGet(body?.sender) ||
-    tryGet(body?.data?.sender) ||
-    tryGet(msg?.sender) ||
-    null
-  );
+  const tryGet = (jid) => { if (!jid) return null; const n = jidToNumber(jid); return (n && n.length >= 10 && n.length <= 13) ? n : null; };
+  return tryGet(msg?.key?.participantAlt) || tryGet(msg?.key?.remoteJidAlt) || tryGet(msg?.key?.participant) || tryGet(msg?.key?.remoteJid) || tryGet(body?.sender) || tryGet(body?.data?.sender) || tryGet(msg?.sender) || null;
 }
 // ---------------- WEBHOOK HANDLER ----------------
 const QR_LIMIT = 5;
@@ -393,22 +323,13 @@ async function handleWebhook(body) {
   console.log(`[WH] instance=${instanceName} event=${event}`);
   if (event === "qrcode.updated") {
     const qr = body.data?.qrcode?.base64 || body.data?.qrcode || body.data?.base64 || null;
-    const result = await pool.query(
-      `UPDATE instances
-       SET qr_count = COALESCE(qr_count, 0) + 1, qr_base64 = $2
-       WHERE instance_name = $1
-       RETURNING qr_count`,
-      [instanceName, qr]
-    );
+    const result = await pool.query(`UPDATE instances SET qr_count = COALESCE(qr_count, 0) + 1, qr_base64 = $2 WHERE instance_name = $1 RETURNING qr_count`, [instanceName, qr]);
     const count = result.rows[0]?.qr_count || 0;
     console.log(`[QR] ${instanceName} count=${count}`);
     if (count > QR_LIMIT) {
       console.warn(`[QR LIMIT] ${instanceName} — deleting.`);
       await deleteInstance(instanceName);
-      await pool.query(
-        `UPDATE instances SET status='dead', qr_base64=NULL WHERE instance_name=$1`,
-        [instanceName]
-      );
+      await pool.query(`UPDATE instances SET status='dead', qr_base64=NULL WHERE instance_name=$1`, [instanceName]);
     }
     return;
   }
@@ -416,95 +337,49 @@ async function handleWebhook(body) {
     const state = body.data?.state || body.data?.instance?.state;
     console.log(`[CONN] ${instanceName} state=${state}`);
     if (state === 'open') {
-      await pool.query(
-        `UPDATE instances SET status='connected', qr_count=0, qr_base64=NULL WHERE instance_name=$1`,
-        [instanceName]
-      );
+      await pool.query(`UPDATE instances SET status='connected', qr_count=0, qr_base64=NULL WHERE instance_name=$1`, [instanceName]);
       await registerWebhook(instanceName);
       console.log(`[CONNECTED] ${instanceName}`);
     } else if (state === 'close') {
-      await pool.query(
-        `UPDATE instances SET status='disconnected' WHERE instance_name=$1`,
-        [instanceName]
-      );
+      await pool.query(`UPDATE instances SET status='disconnected' WHERE instance_name=$1`, [instanceName]);
       console.log(`[DISCONNECTED] ${instanceName}`);
     }
     return;
   }
   if (!event.includes("messages")) return;
-  // PERMANENT FIX for all payload shapes (including the one in your log)
   const msg = body.data?.messages?.[0] || (body.data?.key ? body.data : body.data?.message) || body.data;
-  if (!msg?.key) {
-    console.log(`[WH] messages event but no message key found — skipping`);
-    return;
-  }
+  if (!msg?.key) { console.log(`[WH] messages event but no message key found — skipping`); return; }
   if (msg.key.fromMe) return;
   const uniqueKey = `${instanceName}_${msg.key.id}`;
   if (processed.has(uniqueKey)) return;
   processed.add(uniqueKey);
   setTimeout(() => processed.delete(uniqueKey), 30000);
-
   const number = resolveNumber(body, msg);
   console.log("[DEBUG] NUMBER:", number);
   if (!number) return;
-
   console.log(`[MSG] from=${number} jid=${msg.key.remoteJid} mode=${msg.key.addressingMode || 'normal'}`);
-
   const existing = phoneSessions.get(number);
   if (!existing || Date.now() > existing.expiresAt) {
-    phoneSessions.set(number, {
-      instance: instanceName,
-      expiresAt: Date.now() + 30 * 60 * 1000
-    });
+    phoneSessions.set(number, { instance: instanceName, expiresAt: Date.now() + 30 * 60 * 1000 });
   }
   const session = phoneSessions.get(number);
-  if (
-    !ALLOWED_NUMBERS.has(number) &&
-    session.instance !== instanceName &&
-    Date.now() < session.expiresAt
-  ) return;
-
+  if (!ALLOWED_NUMBERS.has(number) && session.instance !== instanceName && Date.now() < session.expiresAt) return;
   const m = msg.message || {};
-  let text =
-    m.conversation ||
-    m.extendedTextMessage?.text;
-  if (!text || !text.trim()) {
-    console.log("[SKIP] Non-text message ignored");
-    return;
-  }
+  let text = m.conversation || m.extendedTextMessage?.text;
+  if (!text || !text.trim()) { console.log("[SKIP] Non-text message ignored"); return; }
   text = text.trim();
-
-  const db = await pool.query(
-    `SELECT expires_at FROM instances WHERE instance_name = $1`,
-    [instanceName]
-  );
+  const db = await pool.query(`SELECT expires_at FROM instances WHERE instance_name = $1`, [instanceName]);
   if (!db.rows.length) return;
   const expiry = new Date(db.rows[0].expires_at);
   if (!ALLOWED_NUMBERS.has(number) && Date.now() > expiry.getTime()) {
-    await axios.post(
-      `${process.env.EVO_URL}/message/sendText/${instanceName}`,
-      { number, text: "Session expired. Generate a new QR to continue." },
-      { headers: { apikey: process.env.EVO_API_KEY }, timeout: 10000 }
-    );
+    await axios.post(`${process.env.EVO_URL}/message/sendText/${instanceName}`, { number, text: "Session expired. Generate a new QR to continue." }, { headers: { apikey: process.env.EVO_API_KEY }, timeout: 10000 });
     return;
   }
-
   const reply = await askAI(number, text);
-  await axios.post(
-    `${process.env.EVO_URL}/message/sendText/${instanceName}`,
-    { number, text: reply },
-    { headers: { apikey: process.env.EVO_API_KEY }, timeout: 10000 }
-  );
+  await axios.post(`${process.env.EVO_URL}/message/sendText/${instanceName}`, { number, text: reply }, { headers: { apikey: process.env.EVO_API_KEY }, timeout: 10000 });
 }
 // ---------------- WEBHOOK ROUTES ----------------
-const wh = async (req, res) => {
-  res.sendStatus(200);
-  try {
-    await handleWebhook(req.body);
-  } catch (e) {
-    console.error("[WH ERROR]", e.message, e.stack);
-  }
-};
+const wh = async (req, res) => { res.sendStatus(200); try { await handleWebhook(req.body); } catch (e) { console.error("[WH ERROR]", e.message, e.stack); } };
 app.post('/webhook', wh);
 app.post('/webhook/messages-upsert', wh);
 app.post('/webhook/messages-update', wh);
@@ -514,32 +389,17 @@ app.post('/webhook/connection-update', wh);
 app.post('/webhook/contacts-update', wh);
 app.post('/webhook/presence-update', wh);
 // ---------------- CLEANUP ----------------
-setInterval(() => {
-  const now = Date.now();
-  for (const [k, v] of phoneSessions.entries()) {
-    if (now > v.expiresAt) phoneSessions.delete(k);
-  }
-}, 5 * 60 * 1000);
+setInterval(() => { const now = Date.now(); for (const [k, v] of phoneSessions.entries()) { if (now > v.expiresAt) phoneSessions.delete(k); } }, 5 * 60 * 1000);
 // ---------------- PURGE ----------------
 setInterval(async () => {
   try {
-    const result = await pool.query(
-      `SELECT instance_name FROM instances WHERE expires_at < NOW() OR status = 'dead'`
-    );
-    for (const row of result.rows) {
-      await deleteInstance(row.instance_name);
-    }
-    await pool.query(
-      `DELETE FROM instances WHERE expires_at < NOW() OR status = 'dead'`
-    );
+    const result = await pool.query(`SELECT instance_name FROM instances WHERE expires_at < NOW() OR status = 'dead'`);
+    for (const row of result.rows) await deleteInstance(row.instance_name);
+    await pool.query(`DELETE FROM instances WHERE expires_at < NOW() OR status = 'dead'`);
     console.log(`[PURGE] Cleaned ${result.rows.length} instances`);
-  } catch (err) {
-    console.error("[PURGE ERROR]", err.message);
-  }
+  } catch (err) { console.error("[PURGE ERROR]", err.message); }
 }, 60 * 60 * 1000);
 // ---------------- HEALTH ----------------
 app.get('/', (req, res) => res.send("VAYU LIVE"));
 // ---------------- START ----------------
-migrate().then(() => {
-  app.listen(process.env.PORT || 3000, () => console.log("SERVER LIVE"));
-});
+migrate().then(() => { app.listen(process.env.PORT || 3000, () => console.log("SERVER LIVE")); });
