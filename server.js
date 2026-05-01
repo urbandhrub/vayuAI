@@ -3,281 +3,139 @@ const express = require('express');
 const axios = require('axios');
 const { Pool } = require('pg');
 const cors = require('cors');
-const ALLOWED_NUMBERS = require('./exceptionNumbers');
+
 const app = express();
-app.use(express.json({ limit: '50mb' }));
-app.use(cors());
-// ---------------- DATABASE ----------------
+app.use(express.json());
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-  max: 2,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 5000,
+  ssl: { rejectUnauthorized: false }
 });
-// ---------------- MEMORY ----------------
-const processed = new Set();
-const phoneSessions = new Map();
-// ---------------- HISTORY ----------------
+
+const MY_NUMBER = '918240801921';
+
 async function getHistory(userId) {
   const res = await pool.query(
-    `SELECT role, content
-     FROM chat_history
-     WHERE user_id = $1
-     ORDER BY created_at DESC
-     LIMIT 10`,
+    `SELECT role, content FROM chat_history WHERE user_id = $1 ORDER BY created_at DESC LIMIT 5`,
     [userId]
   );
   return res.rows.reverse();
 }
+
 async function saveMessage(userId, role, content) {
   await pool.query(
-    `INSERT INTO chat_history (user_id, role, content)
-     VALUES ($1, $2, $3)`,
+    `INSERT INTO chat_history (user_id, role, content) VALUES ($1, $2, $3)`,
     [userId, role, content]
   );
 }
-// ---------------- AI (RATE-LIMIT HARDENED + 185 TOKEN PERSONA) ----------------
+
 async function askAI(userId, text) {
   const history = await getHistory(userId);
   const messages = [
     {
       role: "system",
-      content: `You are Dhrub — elite revenue strategist in AI, Automation, Influencer Marketing, PR, Content Creation & Side Hustles. You are NOT an AI. You speak as a real expert with practical experience.
+      content: `You are Dhrub — elite revenue strategist in AI, Automation, Influencer Marketing, PR, Content & Side Hustles. You are NOT an AI. You speak as a real expert.
 
-Goal: Help users make money using AI & automation. Find monetization opportunities in every conversation and turn them into action.
+Goal: Help users make money. Find monetization in every chat and turn it into action.
 
-Style: WhatsApp-style — short, sharp, natural, professional. Address user as "Sir" or "Ma'am". Reply in the same language as the user (Hindi or English). Keep every reply under 5 lines maximum.
+Style: WhatsApp-style — short, sharp, natural. Address as "Sir" or "Ma'am". Reply in same language (Hindi/English). Keep replies under 5 lines.
 
-Core rules: Be decisive and results-focused. Always connect to revenue, time-saving or scaling. Move every conversation toward action or income. Never mention being an AI.
+Core: Be decisive, results-focused. Connect everything to revenue or scaling. Never say you are AI.
 
-If asked outside your domain, reply exactly: "I am Dhrub and I specialize exclusively in AI, Automation, Influencer Marketing, PR, Content Creation, and Side Hustles. I would be glad to assist you with any of these topics, Sir/Ma'am."`
+If asked outside domain: "I am Dhrub and I specialize exclusively in AI, Automation, Influencer Marketing, PR, Content Creation, and Side Hustles. I would be glad to assist you with any of these topics, Sir/Ma'am."`
     },
     ...history,
     { role: "user", content: text }
   ];
-  const callGroq = async () => axios.post(
-    "https://api.groq.com/openai/v1/chat/completions",
-    { model: "llama-3.3-70b-versatile", messages, temperature: 0.9, max_tokens: 180 },
-    { headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` }, timeout: 30000 }
+
+  try {
+    const res = await axios.post(
+      "https://api.groq.com/openai/v1/chat/completions",
+      { model: "llama-3.3-70b-versatile", messages, temperature: 0.9, max_tokens: 180 },
+      { headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` }, timeout: 25000 }
+    );
+    const reply = res.data.choices[0].message.content;
+    await saveMessage(userId, "user", text);
+    await saveMessage(userId, "assistant", reply);
+    return reply;
+  } catch (err) {
+    console.error("AI ERROR:", err.response?.data || err.message);
+    return "Sir, temporary issue. Send again in 30 seconds.";
+  }
+}
+
+function getTextFromMessage(msg) {
+  const m = msg.message || msg;
+  if (m.conversation) return m.conversation;
+  if (m.extendedTextMessage?.text) return m.extendedTextMessage.text;
+  return null;
+}
+
+async function handleWebhook(body) {
+  const event = (body.event || '').toLowerCase();
+  if (!event.includes('message')) return;
+
+  const msg = body.data?.messages?.[0] || body.data?.message || body.data;
+  if (!msg || msg.key?.fromMe) return;
+
+  const number = (msg.key?.remoteJidAlt || msg.key?.remoteJid || '').replace(/@.*$/, '').replace(/[^0-9]/g, '');
+  if (number !== MY_NUMBER) return;
+
+  const text = getTextFromMessage(msg);
+  if (!text || !text.trim()) return;
+
+  const reply = await askAI(number, text.trim());
+  await axios.post(
+    `${process.env.EVO_URL}/message/sendText/${body.instance}`,
+    { number, text: reply },
+    { headers: { apikey: process.env.EVO_API_KEY } }
   );
-  for (let attempt = 1; attempt <= 5; attempt++) {
-    try {
-      const res = await callGroq();
-      const reply = res.data.choices[0].message.content;
-      await saveMessage(userId, "user", text);
-      await saveMessage(userId, "assistant", reply);
-      return reply;
-    } catch (err) {
-      const status = err.response?.status;
-      const isRateLimit = status === 429;
-     
-      console.error(`AI ERROR (attempt ${attempt}/${5})${isRateLimit ? ' [RATE LIMITED]' : ''}:`,
-        err.response?.data || err.message);
-      if (attempt < 5) {
-        const delay = Math.pow(2, attempt) * 1000 + Math.random() * 500;
-        console.log(`[RATE LIMIT] Waiting ${Math.round(delay/1000)}s before retry...`);
-        await new Promise(r => setTimeout(r, delay));
-      }
-    }
-  }
-  return "Sir, Groq is taking a quick power nap. Wait 30-60 seconds and send your message again — I’ll wake it up with your next revenue move.";
 }
-// ---------------- DELETE INSTANCE ----------------
-async function deleteInstance(instanceName) {
+
+app.post('/webhook', async (req, res) => {
+  res.sendStatus(200);
   try {
-    await axios.delete(
-      `${process.env.EVO_URL}/instance/delete/${instanceName}`,
-      { headers: { apikey: process.env.EVO_API_KEY }, timeout: 10000 }
-    );
-    console.log(`[CLEANUP] Deleted: ${instanceName}`);
-  } catch (err) {
-    const status = err.response?.status;
-    if (status !== 404) {
-      console.error(`[CLEANUP] Failed to delete ${instanceName}:`, err.response?.data || err.message);
-    }
+    await handleWebhook(req.body);
+  } catch (e) {
+    console.error("WEBHOOK ERROR:", e.message);
   }
-}
-// ---------------- REGISTER WEBHOOK ON INSTANCE ----------------
-async function registerWebhook(instanceName) {
-  try {
-    await axios.post(
-      `${process.env.EVO_URL}/webhook/set/${instanceName}`,
-      {
-        url: process.env.WEBHOOK_URL || "https://vayuai.onrender.com/webhook",
-        webhook_by_events: false,
-        webhook_base64: false,
-        events: [
-          "MESSAGES_UPSERT",
-          "MESSAGES_UPDATE",
-          "QRCODE_UPDATED",
-          "CONNECTION_UPDATE"
-        ]
-      },
-      { headers: { apikey: process.env.EVO_API_KEY }, timeout: 10000 }
-    );
-    console.log(`[WEBHOOK] Registered on: ${instanceName}`);
-  } catch (err) {
-    console.error(`[WEBHOOK] Failed to register on ${instanceName}:`, err.response?.data || err.message);
-  }
-}
-// ---------------- DB MIGRATION ----------------
-async function migrate() {
-  await pool.query(`ALTER TABLE instances ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'pending'`).catch(() => {});
-  await pool.query(`ALTER TABLE instances ADD COLUMN IF NOT EXISTS qr_count INTEGER DEFAULT 0`).catch(() => {});
-  await pool.query(`ALTER TABLE instances ADD COLUMN IF NOT EXISTS qr_base64 TEXT`).catch(() => {});
-}
-// ---------------- CREATE INSTANCE ----------------
+});
+
 app.post('/create-instance', async (req, res) => {
   try {
     let { userId } = req.body;
     userId = (userId || '').toString().replace(/[^0-9]/g, "");
     if (!userId) return res.status(400).json({ error: "userId required" });
-    const dbCheck = await pool.query(`SELECT instance_name, status, expires_at FROM instances WHERE id = $1`, [userId]);
-    if (dbCheck.rows.length) {
-      const row = dbCheck.rows[0];
-      const notExpired = new Date(row.expires_at) > new Date();
-      if (row.status === 'connected' && notExpired) {
-        try {
-          const statusRes = await axios.get(`${process.env.EVO_URL}/instance/connectionState/${row.instance_name}`, { headers: { apikey: process.env.EVO_API_KEY }, timeout: 8000 });
-          if (statusRes.data?.instance?.state === 'open') return res.json({ success: true, instance: row.instance_name, reused: true });
-        } catch (_) {}
-        await deleteInstance(row.instance_name);
-      } else if (notExpired && row.status !== 'connected') {
-        await deleteInstance(row.instance_name);
-      } else if (!notExpired) {
-        await deleteInstance(row.instance_name);
-      }
-    }
+
     const instanceName = `vayu_${userId}_${Date.now()}`;
-    const isPermanent = ALLOWED_NUMBERS.has(userId);
-    const expiry = isPermanent ? new Date(Date.now() + 365 * 24 * 60 * 60 * 1000) : new Date(Date.now() + 60 * 60 * 1000);
-    const evo = await axios.post(`${process.env.EVO_URL}/instance/create`, { instanceName, integration: "WHATSAPP-BAILEYS", qrcode: true }, { headers: { apikey: process.env.EVO_API_KEY }, timeout: 15000 });
-    const initialQr = evo.data?.qrcode?.base64 || null;
-    await registerWebhook(instanceName);
-    await pool.query(`INSERT INTO instances (id, instance_name, status, expires_at, qr_count, qr_base64) VALUES ($1, $2, 'pending', $3, 0, $4) ON CONFLICT (id) DO UPDATE SET instance_name=$2, status='pending', expires_at=$3, qr_count=0, qr_base64=$4`, [userId, instanceName, expiry, initialQr]);
-    res.json({ success: true, instance: instanceName, qr: initialQr, expires: expiry });
+    const expiry = new Date(Date.now() + 60 * 60 * 1000);
+
+    const evo = await axios.post(
+      `${process.env.EVO_URL}/instance/create`,
+      { instanceName, integration: "WHATSAPP-BAILEYS", qrcode: true },
+      { headers: { apikey: process.env.EVO_API_KEY }, timeout: 15000 }
+    );
+
+    const qr = evo.data?.qrcode?.base64 || null;
+    await pool.query(
+      `INSERT INTO instances (id, instance_name, status, expires_at, qr_base64) VALUES ($1, $2, 'pending', $3, $4) ON CONFLICT (id) DO UPDATE SET instance_name=$2, status='pending', expires_at=$3, qr_base64=$4`,
+      [userId, instanceName, expiry, qr]
+    );
+
+    res.json({ success: true, instance: instanceName, qr, expires: expiry });
   } catch (err) {
-    console.error("CREATE ERROR:", err.response?.data || err.message);
-    res.status(500).json({ error: "Instance creation failed" });
+    res.status(500).json({ error: "Creation failed" });
   }
 });
-// ---------------- GET QR ----------------
+
 app.get('/get-qr/:instance', async (req, res) => {
   try {
     const result = await pool.query(`SELECT qr_base64, status FROM instances WHERE instance_name = $1`, [req.params.instance]);
     if (!result.rows.length) return res.json({ ready: false, qr: null });
-    const { qr_base64, status } = result.rows[0];
-    if (status === 'connected') return res.json({ ready: true, connected: true, qr: null });
-    res.json({ ready: !!qr_base64, qr: qr_base64 || null });
+    res.json({ ready: true, qr: result.rows[0].qr_base64, status: result.rows[0].status });
   } catch (err) { res.json({ ready: false, qr: null }); }
 });
-// ---------------- STATUS ----------------
-app.get('/status/:instance', async (req, res) => {
-  try {
-    const result = await pool.query(`SELECT status, expires_at FROM instances WHERE instance_name = $1`, [req.params.instance]);
-    if (!result.rows.length) return res.json({ status: 'unknown' });
-    res.json(result.rows[0]);
-  } catch (err) { res.json({ status: 'error' }); }
-});
-// ---------------- HELPERS ----------------
-function resolveJid(key) { if (key.addressingMode === 'lid' && key.remoteJidAlt) return key.remoteJidAlt; return key.remoteJid; }
-function jidToNumber(jid) { return (jid || '').replace(/@.*$/, '').replace(/[^0-9]/g, ''); }
-// ---------------- NORMALIZE EVENT NAME ----------------
-function normalizeEvent(event) { return (event || '').toLowerCase().replace(/_/g, '.'); }
-// ---------------- EXTRACT MESSAGE ----------------
-function extractMessage(data) { if (data?.message?.key) return data.message; if (data?.key) return data; if (Array.isArray(data?.messages) && data.messages[0]?.key) return data.messages[0]; return null; }
-// ---------------- PERMANENT LID FIX ----------------
-function resolveNumber(body, msg) {
-  const tryGet = (jid) => { if (!jid) return null; const n = jidToNumber(jid); return (n && n.length >= 10 && n.length <= 13) ? n : null; };
-  return tryGet(msg?.key?.participantAlt) || tryGet(msg?.key?.remoteJidAlt) || tryGet(msg?.key?.participant) || tryGet(msg?.key?.remoteJid) || tryGet(body?.sender) || tryGet(body?.data?.sender) || tryGet(msg?.sender) || null;
-}
-// ---------------- WEBHOOK HANDLER ----------------
-const QR_LIMIT = 5;
-async function handleWebhook(body) {
-  const instanceName = body.instance;
-  if (!instanceName) return;
-  const event = normalizeEvent(body.event);
-  console.log(`[WH] instance=${instanceName} event=${event}`);
-  if (event === "qrcode.updated") {
-    const qr = body.data?.qrcode?.base64 || body.data?.qrcode || body.data?.base64 || null;
-    const result = await pool.query(`UPDATE instances SET qr_count = COALESCE(qr_count, 0) + 1, qr_base64 = $2 WHERE instance_name = $1 RETURNING qr_count`, [instanceName, qr]);
-    const count = result.rows[0]?.qr_count || 0;
-    console.log(`[QR] ${instanceName} count=${count}`);
-    if (count > QR_LIMIT) {
-      console.warn(`[QR LIMIT] ${instanceName} — deleting.`);
-      await deleteInstance(instanceName);
-      await pool.query(`UPDATE instances SET status='dead', qr_base64=NULL WHERE instance_name=$1`, [instanceName]);
-    }
-    return;
-  }
-  if (event === "connection.update") {
-    const state = body.data?.state || body.data?.instance?.state;
-    console.log(`[CONN] ${instanceName} state=${state}`);
-    if (state === 'open') {
-      await pool.query(`UPDATE instances SET status='connected', qr_count=0, qr_base64=NULL WHERE instance_name=$1`, [instanceName]);
-      await registerWebhook(instanceName);
-      console.log(`[CONNECTED] ${instanceName}`);
-    } else if (state === 'close') {
-      await pool.query(`UPDATE instances SET status='disconnected' WHERE instance_name=$1`, [instanceName]);
-      console.log(`[DISCONNECTED] ${instanceName}`);
-    }
-    return;
-  }
-  if (!event.includes("messages")) return;
-  const msg = body.data?.messages?.[0] || (body.data?.key ? body.data : body.data?.message) || body.data;
-  if (!msg?.key) { console.log(`[WH] messages event but no message key found — skipping`); return; }
-  if (msg.key.fromMe) return;
-  const uniqueKey = `${instanceName}_${msg.key.id}`;
-  if (processed.has(uniqueKey)) return;
-  processed.add(uniqueKey);
-  setTimeout(() => processed.delete(uniqueKey), 30000);
-  const number = resolveNumber(body, msg);
-  console.log("[DEBUG] NUMBER:", number);
-  if (!number) return;
-  console.log(`[MSG] from=${number} jid=${msg.key.remoteJid} mode=${msg.key.addressingMode || 'normal'}`);
-  const existing = phoneSessions.get(number);
-  if (!existing || Date.now() > existing.expiresAt) {
-    phoneSessions.set(number, { instance: instanceName, expiresAt: Date.now() + 30 * 60 * 1000 });
-  }
-  const session = phoneSessions.get(number);
-  if (!ALLOWED_NUMBERS.has(number) && session.instance !== instanceName && Date.now() < session.expiresAt) return;
-  const m = msg.message || {};
-  let text = m.conversation || m.extendedTextMessage?.text;
-  if (!text || !text.trim()) { console.log("[SKIP] Non-text message ignored"); return; }
-  text = text.trim();
-  const db = await pool.query(`SELECT expires_at FROM instances WHERE instance_name = $1`, [instanceName]);
-  if (!db.rows.length) return;
-  const expiry = new Date(db.rows[0].expires_at);
-  if (!ALLOWED_NUMBERS.has(number) && Date.now() > expiry.getTime()) {
-    await axios.post(`${process.env.EVO_URL}/message/sendText/${instanceName}`, { number, text: "Session expired. Generate a new QR to continue." }, { headers: { apikey: process.env.EVO_API_KEY }, timeout: 10000 });
-    return;
-  }
-  const reply = await askAI(number, text);
-  await axios.post(`${process.env.EVO_URL}/message/sendText/${instanceName}`, { number, text: reply }, { headers: { apikey: process.env.EVO_API_KEY }, timeout: 10000 });
-}
-// ---------------- WEBHOOK ROUTES ----------------
-const wh = async (req, res) => { res.sendStatus(200); try { await handleWebhook(req.body); } catch (e) { console.error("[WH ERROR]", e.message, e.stack); } };
-app.post('/webhook', wh);
-app.post('/webhook/messages-upsert', wh);
-app.post('/webhook/messages-update', wh);
-app.post('/webhook/chats-upsert', wh);
-app.post('/webhook/qrcode-updated', wh);
-app.post('/webhook/connection-update', wh);
-app.post('/webhook/contacts-update', wh);
-app.post('/webhook/presence-update', wh);
-// ---------------- CLEANUP ----------------
-setInterval(() => { const now = Date.now(); for (const [k, v] of phoneSessions.entries()) { if (now > v.expiresAt) phoneSessions.delete(k); } }, 5 * 60 * 1000);
-// ---------------- PURGE ----------------
-setInterval(async () => {
-  try {
-    const result = await pool.query(`SELECT instance_name FROM instances WHERE expires_at < NOW() OR status = 'dead'`);
-    for (const row of result.rows) await deleteInstance(row.instance_name);
-    await pool.query(`DELETE FROM instances WHERE expires_at < NOW() OR status = 'dead'`);
-    console.log(`[PURGE] Cleaned ${result.rows.length} instances`);
-  } catch (err) { console.error("[PURGE ERROR]", err.message); }
-}, 60 * 60 * 1000);
-// ---------------- HEALTH ----------------
+
 app.get('/', (req, res) => res.send("VAYU LIVE"));
-// ---------------- START ----------------
-migrate().then(() => { app.listen(process.env.PORT || 3000, () => console.log("SERVER LIVE")); });
+
+app.listen(process.env.PORT || 3000, () => console.log("SERVER LIVE"));
