@@ -92,7 +92,6 @@ async function deleteInstance(instanceName) {
     );
     console.log(`[CLEANUP] Deleted: ${instanceName}`);
   } catch (err) {
-    // Don't crash if Evo says 404 — instance may already be gone
     const status = err.response?.status;
     if (status !== 404) {
       console.error(`[CLEANUP] Failed to delete ${instanceName}:`, err.response?.data || err.message);
@@ -106,12 +105,10 @@ async function migrate() {
     ALTER TABLE instances ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'pending'
   `).catch(() => {});
 
-  // KEY FIX: store QR count in DB so it survives Render restarts
   await pool.query(`
     ALTER TABLE instances ADD COLUMN IF NOT EXISTS qr_count INTEGER DEFAULT 0
   `).catch(() => {});
 
-  // Store latest QR base64 in DB so get-qr works after restarts
   await pool.query(`
     ALTER TABLE instances ADD COLUMN IF NOT EXISTS qr_base64 TEXT
   `).catch(() => {});
@@ -158,6 +155,8 @@ app.post('/create-instance', async (req, res) => {
 
     const instanceName = `vayu_${userId}_${Date.now()}`;
     const isPermanent = ALLOWED_NUMBERS.has(userId);
+
+    // 1 year for allowed numbers, 1 hour for everyone else
     const expiry = isPermanent
       ? new Date(Date.now() + 365 * 24 * 60 * 60 * 1000)
       : new Date(Date.now() + 60 * 60 * 1000);
@@ -224,6 +223,21 @@ app.get('/status/:instance', async (req, res) => {
 // ---------------- WEBHOOK HANDLER ----------------
 const QR_LIMIT = 5;
 
+// ---- HELPER: resolve real JID from LID addressing mode ----
+// WhatsApp's new LID mode sends a privacy-preserving numeric ID instead of
+// the real phone JID. remoteJidAlt holds the actual phone JID in that case.
+function resolveJid(key) {
+  if (key.addressingMode === 'lid' && key.remoteJidAlt) {
+    return key.remoteJidAlt; // e.g. "919874076688@s.whatsapp.net"
+  }
+  return key.remoteJid;     // e.g. "919874076688@s.whatsapp.net"
+}
+
+// Extract bare phone number from a JID
+function jidToNumber(jid) {
+  return (jid || '').replace(/@.*$/, '').replace(/[^0-9]/g, '');
+}
+
 async function handleWebhook(body) {
   const instanceName = body.instance;
   if (!instanceName) return;
@@ -232,7 +246,6 @@ async function handleWebhook(body) {
   if (body.event === "qrcode.updated") {
     const qr = body.data?.qrcode?.base64 || body.data?.qrcode;
 
-    // Increment QR count in DB atomically
     const result = await pool.query(
       `UPDATE instances
        SET qr_count = COALESCE(qr_count, 0) + 1,
@@ -287,8 +300,12 @@ async function handleWebhook(body) {
   processed.add(uniqueKey);
   setTimeout(() => processed.delete(uniqueKey), 30000);
 
-  const number = (msg.key.remoteJid || '').replace(/[^0-9]/g, "");
+  // ---- FIX: resolve real JID (handles LID addressing mode) ----
+  const realJid = resolveJid(msg.key);
+  const number = jidToNumber(realJid);
   if (!number) return;
+
+  console.log(`[MSG] from=${number} jid=${realJid} mode=${msg.key.addressingMode || 'normal'}`);
 
   // SESSION LOCK — prevent same user being handled by multiple instances
   const existing = phoneSessions.get(number);
@@ -337,6 +354,7 @@ async function handleWebhook(body) {
   }
 
   const reply = await askAI(number, text);
+
   await axios.post(
     `${process.env.EVO_URL}/message/sendText/${instanceName}`,
     { number, text: reply },
