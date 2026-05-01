@@ -71,7 +71,7 @@ async function askAI(userId, text) {
     const res = await axios.post(
       "https://api.groq.com/openai/v1/chat/completions",
       {
-        model: "llama-3.3-70b-versatile",
+        model: "llama-3.1-8b-instant",
         messages,
         temperature: 0.85,
         max_tokens: 400,
@@ -104,7 +104,7 @@ async function askAI(userId, text) {
         const res2 = await axios.post(
           "https://api.groq.com/openai/v1/chat/completions",
           {
-            model: "llama-3.3-70b-versatile",
+            model: "llama-3.1-8b-instant",
             messages: [
               { role: "user", content: SYSTEM_PROMPT },
               { role: "assistant", content: "Got it — I'm Dhrub. Let's build." },
