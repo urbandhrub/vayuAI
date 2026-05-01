@@ -384,7 +384,7 @@ async function handleWebhook(body) {
   if (processed.has(uniqueKey)) return;
   processed.add(uniqueKey);
   setTimeout(() => processed.delete(uniqueKey), 30000);
-  // ---- FIX: resolve real JID (handles LID addressing mode) ------
+  // ---- FIX: resolve real JID (handles LID addressing mode) ----
   const realJid = resolveJid(msg.key);
   const number = jidToNumber(realJid);
   if (!number) return;
