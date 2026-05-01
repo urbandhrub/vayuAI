@@ -220,7 +220,6 @@ async function deleteInstance(instanceName) {
 }
 
 // ---------------- REGISTER WEBHOOK ON INSTANCE ----------------
-// BUG FIX #3: Must register webhook per-instance with correct uppercase event names
 async function registerWebhook(instanceName) {
   try {
     await axios.post(
@@ -305,7 +304,6 @@ app.post('/create-instance', async (req, res) => {
 
     const initialQr = evo.data?.qrcode?.base64 || null;
 
-    // BUG FIX #3: Register webhook immediately after instance creation
     await registerWebhook(instanceName);
 
     await pool.query(
@@ -366,25 +364,33 @@ function jidToNumber(jid) {
 }
 
 // ---------------- NORMALIZE EVENT NAME ----------------
-// BUG FIX #1: Evo v2 sends UPPERCASE events, normalize both cases
 function normalizeEvent(event) {
   return (event || '').toLowerCase().replace(/_/g, '.');
-  // MESSAGES_UPSERT  → messages.upsert
-  // messages.upsert  → messages.upsert  (already correct)
-  // QRCODE_UPDATED   → qrcode.updated
-  // CONNECTION_UPDATE → connection.update
 }
 
 // ---------------- EXTRACT MESSAGE ----------------
-// BUG FIX #2: Handle both Evo v1 and v2 message envelope shapes
 function extractMessage(data) {
-  // Evo v2: data.message is the single message object
   if (data?.message?.key) return data.message;
-  // Evo v2 alt: data itself is the message
   if (data?.key) return data;
-  // Evo v1: data.messages is an array
   if (Array.isArray(data?.messages) && data.messages[0]?.key) return data.messages[0];
   return null;
+}
+
+// ---------------- LID → PHONE RESOLUTION ----------------
+// FIX: In LID mode, Evo sends remoteJid as @lid — resolve real phone from sender field
+function resolveNumber(body, msg) {
+  // 1. Try remoteJidAlt on key (set when addressingMode === 'lid')
+  if (msg?.key?.remoteJidAlt) {
+    const n = jidToNumber(msg.key.remoteJidAlt);
+    if (n) return n;
+  }
+  // 2. Try body.sender (always the real phone JID from Evo)
+  if (body?.sender) {
+    const n = jidToNumber(body.sender);
+    if (n) return n;
+  }
+  // 3. Fallback to remoteJid (may be LID, filtered later)
+  return jidToNumber(msg?.key?.remoteJid);
 }
 
 // ---------------- WEBHOOK HANDLER ----------------
@@ -422,7 +428,6 @@ async function handleWebhook(body) {
 
   // ---- CONNECTION UPDATE ----
   if (event === "connection.update") {
-    // Evo v2 puts state at data.state, v1 at data.instance.state
     const state = body.data?.state || body.data?.instance?.state;
     console.log(`[CONN] ${instanceName} state=${state}`);
     if (state === 'open') {
@@ -430,7 +435,6 @@ async function handleWebhook(body) {
         `UPDATE instances SET status='connected', qr_count=0, qr_base64=NULL WHERE instance_name=$1`,
         [instanceName]
       );
-      // Re-register webhook on reconnect to ensure events keep flowing
       await registerWebhook(instanceName);
       console.log(`[CONNECTED] ${instanceName}`);
     } else if (state === 'close') {
@@ -444,10 +448,9 @@ async function handleWebhook(body) {
   }
 
   // ---- MESSAGES ----
-  // TASK 1 FIX: was (event !== "messages.upsert"), now accepts any messages.* event
   if (!event.includes("messages")) return;
 
-  // TASK 2 FIX: was extractMessage(body.data), now handles all envelope shapes directly
+  // FIX: handle all Evo v2 envelope shapes including LID mode
   const msg =
     body.data?.message ||
     body.data?.messages?.[0] ||
@@ -464,11 +467,17 @@ async function handleWebhook(body) {
   processed.add(uniqueKey);
   setTimeout(() => processed.delete(uniqueKey), 30000);
 
-  const realJid = resolveJid(msg.key);
-  const number = jidToNumber(realJid);
+  // FIX: use resolveNumber to correctly handle LID mode
+  const number = resolveNumber(body, msg);
   if (!number) return;
 
-  console.log(`[MSG] from=${number} jid=${realJid} mode=${msg.key.addressingMode || 'normal'}`);
+  // FIX: skip pure LID jids that we couldn't resolve to a real phone number
+  if (number.length > 15) {
+    console.log(`[MSG] Skipping unresolved LID: ${number}`);
+    return;
+  }
+
+  console.log(`[MSG] from=${number} jid=${msg.key.remoteJid} mode=${msg.key.addressingMode || 'normal'}`);
 
   // SESSION LOCK
   const existing = phoneSessions.get(number);
@@ -531,7 +540,6 @@ async function handleWebhook(body) {
 
 // ---------------- WEBHOOK ROUTES ----------------
 const wh = async (req, res) => {
-  // Always respond 200 immediately so Evo doesn't retry/drop
   res.sendStatus(200);
   try {
     await handleWebhook(req.body);
