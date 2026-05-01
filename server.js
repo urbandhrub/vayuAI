@@ -17,11 +17,6 @@ const pool = new Pool({
   max: 2
 });
 
-// ---------------- QR STORE ----------------
-const qrStore = new Map();
-const activeSessions = new Map();
-const phoneSessions = new Map();
-
 // ---------------- MEMORY ----------------
 async function getHistory(userId) {
   const res = await pool.query(
@@ -35,6 +30,264 @@ async function getHistory(userId) {
   return res.rows.reverse();
 }
 
+async function saveMessage(userId, role, content) {
+  await pool.query(
+    `INSERT INTO chat_history (user_id, role, content)
+     VALUES ($1, $2, $3)`,
+    [userId, role, content]
+  );
+}
+
+// ---------------- AI ----------------
+async function askAI(userId, text) {
+  const history = await getHistory(userId);
+
+  const messages = [
+    {
+      role: "system",
+      content: `YOUR ORIGINAL AI SYSTEM PROMPT HERE`
+    },
+    ...history,
+    { role: "user", content: text }
+  ];
+
+  try {
+    const res = await axios.post(
+      "https://api.groq.com/openai/v1/chat/completions",
+      {
+        model: "llama-3.3-70b-versatile",
+        messages,
+        temperature: 0.9,
+        max_tokens: 400
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.GROQ_API_KEY}`
+        }
+      }
+    );
+
+    const reply = res.data.choices[0].message.content;
+
+    await saveMessage(userId, "user", text);
+    await saveMessage(userId, "assistant", reply);
+
+    return reply;
+
+  } catch (err) {
+    console.error("AI ERROR:", err.response?.data || err.message);
+    return "bol na, sun raha hoon 🙂";
+  }
+}
+
+// ---------------- INSTANCE ----------------
+const activeSessions = new Map();
+const phoneSessions = new Map();
+const qrStore = new Map();
+
+app.post('/create-instance', async (req, res) => {
+
+  let { userId } = req.body;
+
+  // ✅ normalize number
+  userId = userId.replace(/[^0-9]/g, "");
+
+  const existing = activeSessions.get(userId);
+  if (existing && Date.now() < existing.expiresAt) {
+    return res.json({
+      success: true,
+      instance: existing.instance,
+      reused: true
+    });
+  }
+
+  const instanceName = `vayu_${userId}_${Date.now()}`;
+
+  // ✅ VALIDITY LOGIC
+  const isPermanent = ALLOWED_NUMBERS.has(userId);
+
+  const expiry = isPermanent
+    ? new Date(Date.now() + 365 * 24 * 60 * 60 * 1000) // 1 YEAR
+    : new Date(Date.now() + 60 * 60 * 1000); // 60 MIN
+
+  try {
+    const evo = await axios.post(
+      `${process.env.EVO_URL}/instance/create`,
+      {
+        instanceName,
+        integration: "WHATSAPP-BAILEYS",
+        qrcode: true
+      },
+      {
+        headers: { apikey: process.env.EVO_API_KEY }
+      }
+    );
+
+    await pool.query(
+      `INSERT INTO instances (id, instance_name, status, expires_at)
+       VALUES ($1,$2,$3,$4)
+       ON CONFLICT (id)
+       DO UPDATE SET instance_name=$2, expires_at=$4`,
+      [userId, instanceName, 'active', expiry]
+    );
+
+    activeSessions.set(userId, {
+      instance: instanceName,
+      expiresAt: Date.now() + (30 * 60 * 1000)
+    });
+
+    res.json({
+      success: true,
+      instance: instanceName,
+      qr: evo.data?.qrcode?.base64,
+      expires: expiry
+    });
+
+  } catch (err) {
+    console.error("CREATE ERROR:", err.response?.data || err.message);
+    res.status(500).json({ error: "Instance failed" });
+  }
+});
+
+// ---------------- QR ----------------
+app.get('/get-qr/:instance', (req, res) => {
+  const qr = qrStore.get(req.params.instance);
+  res.json({ ready: !!qr, qr: qr || null });
+});
+
+// ---------------- WEBHOOK ----------------
+const processed = new Set();
+
+app.post('/webhook', async (req, res) => {
+  try {
+    const body = req.body;
+
+    if (body.event === "qrcode.updated") {
+      const qr = body.data?.qrcode?.base64 || body.data?.qrcode;
+      if (qr) qrStore.set(body.instance, qr);
+      return res.sendStatus(200);
+    }
+
+    // ✅ accept both events
+    if (body.event !== "messages.upsert" && body.event !== "messages.update") {
+      return res.sendStatus(200);
+    }
+
+    const msg = body.data?.messages?.[0] || body.data?.[0] || body.data;
+
+    if (!msg?.key) return res.sendStatus(200);
+
+    // ❌ ignore bot messages
+    if (msg.key.fromMe) return res.sendStatus(200);
+
+    const msgId = msg.key.id;
+    const uniqueKey = body.instance + "_" + msgId;
+
+    // ✅ FIXED DEDUPE
+    if (processed.has(uniqueKey)) return res.sendStatus(200);
+    processed.add(uniqueKey);
+    setTimeout(() => processed.delete(uniqueKey), 30000);
+
+    const number = msg.key.remoteJid.replace(/[^0-9]/g, "");
+
+    // SESSION LOCK
+    const existing = phoneSessions.get(number);
+    if (!existing || Date.now() > existing.expiresAt) {
+      phoneSessions.set(number, {
+        instance: body.instance,
+        expiresAt: Date.now() + 30 * 60 * 1000
+      });
+    }
+
+    const session = phoneSessions.get(number);
+
+    if (
+      !ALLOWED_NUMBERS.has(number) &&
+      session.instance !== body.instance &&
+      Date.now() < session.expiresAt
+    ) {
+      return res.sendStatus(200);
+    }
+
+    // ✅ TEXT EXTRACTION
+    const m = msg.message || {};
+
+    let text =
+      m.conversation ||
+      m.extendedTextMessage?.text ||
+      m.imageMessage?.caption ||
+      m.videoMessage?.caption ||
+      m.documentMessage?.caption ||
+      m.buttonsResponseMessage?.selectedButtonId ||
+      m.listResponseMessage?.title;
+
+    if (!text) return res.sendStatus(200);
+
+    text = text.trim();
+
+    // EXPIRY CHECK
+    const db = await pool.query(
+      'SELECT expires_at FROM instances WHERE instance_name = $1',
+      [body.instance]
+    );
+
+    if (!db.rows.length) return res.sendStatus(200);
+
+    const expiry = new Date(db.rows[0].expires_at);
+
+    if (
+      !ALLOWED_NUMBERS.has(number) &&
+      Date.now() > expiry.getTime()
+    ) {
+      await axios.post(
+        `${process.env.EVO_URL}/message/sendText/${body.instance}`,
+        {
+          number,
+          text: "Session expired. Generate new QR to continue."
+        },
+        { headers: { apikey: process.env.EVO_API_KEY } }
+      );
+
+      return res.sendStatus(200);
+    }
+
+    // AI
+    const reply = await askAI(number, text);
+
+    await axios.post(
+      `${process.env.EVO_URL}/message/sendText/${body.instance}`,
+      { number, text: reply },
+      { headers: { apikey: process.env.EVO_API_KEY } }
+    );
+
+  } catch (err) {
+    console.error("WEBHOOK ERROR:", err.response?.data || err.message);
+  }
+
+  res.sendStatus(200);
+});
+
+// ---------------- CLEANUP ----------------
+setInterval(() => {
+  const now = Date.now();
+
+  for (const [k, v] of activeSessions.entries()) {
+    if (now > v.expiresAt) activeSessions.delete(k);
+  }
+
+  for (const [k, v] of phoneSessions.entries()) {
+    if (now > v.expiresAt) phoneSessions.delete(k);
+  }
+
+}, 5 * 60 * 1000);
+
+// ---------------- HEALTH ----------------
+app.get('/', (req, res) => res.send("VAYU LIVE"));
+
+// ---------------- START ----------------
+app.listen(process.env.PORT || 3000, () => {
+  console.log("SERVER LIVE");
+});
 async function saveMessage(userId, role, content) {
   await pool.query(
     `INSERT INTO chat_history (user_id, role, content)
