@@ -216,7 +216,7 @@ app.post('/create-instance', async (req, res) => {
 
     const evo = await axios.post(
       `${process.env.EVO_URL}/instance/create`,
-      { instanceName, integration: 'WHATSAPP-BAILEYS', qrcode: true },
+      { instanceName, integration: 'WHATSAPP-BAILEYS', qrcode: true, groupsIgnore: false },
       { headers: { apikey: process.env.EVO_API_KEY }, timeout: 15000 }
     );
 
@@ -359,28 +359,34 @@ async function handleWebhook(body) {
   if (!msg.message) return;                       // no message body (status updates, etc.)
   if (msg.messageStubType) return;               // system messages (e.g. group join)
 
-  // Group messages — skip (only handle DMs)
   const remoteJid = msg.key.remoteJid || '';
-  if (remoteJid.endsWith('@g.us')) return;
+  const isGroup = remoteJid.endsWith('@g.us');
 
   const uniqueKey = `${instanceName}_${msg.key.id}`;
   if (processed.has(uniqueKey)) return;
   processed.add(uniqueKey);
   setTimeout(() => processed.delete(uniqueKey), 30000);
 
-  // sendJid = what we use to reply (original remoteJid — Evo resolves LID internally)
+  // sendJid = reply destination (group JID for groups, user JID for DMs)
   const sendJid = remoteJid;
-  // realJid = resolved for phone number extraction
-  const realJid = resolveJid(msg.key);
-  const number = jidToNumber(realJid);
 
-  // LID fallback: use body.sender (instance owner JID) is WRONG for user identity
-  // Instead use the LID itself as a stable key — consistent per user across sessions
-  const userId = (number && !isLid(realJid)) ? number : jidToNumber(sendJid);
+  // Evo v2.3.7 puts group sender in multiple possible places
+  const senderJid = isGroup
+    ? (msg.key.participant || msg.participant || body.data?.participant || '')
+    : resolveJid(msg.key);
+
+  // For groups with no participant — skip (bot's own message echoed back)
+  if (isGroup && !senderJid) return;
+
+  const realJid = senderJid || resolveJid(msg.key);
+  const number = jidToNumber(realJid);
+  const userId = (number && number.length >= 10 && !isLid(realJid))
+    ? number
+    : jidToNumber(remoteJid);
 
   if (!userId || userId.length < 5) return;
 
-  console.log(`[MSG] userId=${userId} sendJid=${sendJid} realJid=${realJid}`);
+  console.log(`[MSG] ${isGroup ? 'GROUP' : 'DM'} userId=${userId} sendJid=${sendJid} sender=${senderJid}`);
 
   // SESSION LOCK — lock per userId
   const existing = phoneSessions.get(userId);
