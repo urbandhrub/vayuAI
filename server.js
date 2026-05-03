@@ -78,6 +78,80 @@ async function saveMessage(userId, role, content) {
   );
 }
 
+// ---------------- VOICE PROCESSING ----------------
+// Transcribe voice note: download audio from Evo → send to Groq Whisper → return text
+async function transcribeAudio(audioUrl) {
+  try {
+    const audioRes = await axios.get(audioUrl, { responseType: 'arraybuffer', timeout: 20000 });
+    const audioBuffer = Buffer.from(audioRes.data);
+    const FormData = require('form-data');
+    const form = new FormData();
+    form.append('file', audioBuffer, { filename: 'voice.ogg', contentType: 'audio/ogg' });
+    form.append('model', 'whisper-large-v3-turbo');
+    form.append('response_format', 'text');
+    const keys = getGroqKeys();
+    const key = pickGroqKey(keys);
+    const transcriptRes = await axios.post(
+      'https://api.groq.com/openai/v1/audio/transcriptions',
+      form,
+      { headers: { ...form.getHeaders(), Authorization: `Bearer ${key}` }, timeout: 30000 }
+    );
+    const transcript = typeof transcriptRes.data === 'string'
+      ? transcriptRes.data.trim()
+      : transcriptRes.data?.text?.trim();
+    console.log(`[VOICE→TEXT] "${transcript}"`);
+    return transcript || null;
+  } catch (err) {
+    console.error('[TRANSCRIBE ERROR]', err.response?.data || err.message);
+    return null;
+  }
+}
+
+// Text-to-speech via edge-tts (Microsoft free TTS, no API key needed)
+// Install once on server: pip install edge-tts --break-system-packages
+async function textToSpeech(text) {
+  try {
+    const { execFile } = require('child_process');
+    const fs = require('fs');
+    const os = require('os');
+    const tmpFile = `${os.tmpdir()}/vayu_${Date.now()}.mp3`;
+    await new Promise((resolve, reject) => {
+      execFile('edge-tts',
+        ['--voice', 'hi-IN-MadhurNeural', '--text', text, '--write-media', tmpFile],
+        { timeout: 20000 },
+        (err) => err ? reject(err) : resolve()
+      );
+    });
+    const buffer = fs.readFileSync(tmpFile);
+    fs.unlink(tmpFile, () => {});
+    return buffer;
+  } catch (err) {
+    console.error('[TTS ERROR]', err.message);
+    return null;
+  }
+}
+
+// Send audio as voice note (ptt) via Evolution API
+async function sendAudioReply(instanceName, sendJid, audioBuffer) {
+  try {
+    await axios.post(
+      `${process.env.EVO_URL}/message/sendMedia/${instanceName}`,
+      {
+        number: sendJid,
+        mediatype: 'audio',
+        mimetype: 'audio/mpeg',
+        media: audioBuffer.toString('base64'),
+        fileName: 'reply.mp3',
+        ptt: true, // renders as voice note in WhatsApp, not a file attachment
+      },
+      { headers: { apikey: process.env.EVO_API_KEY }, timeout: 20000 }
+    );
+    console.log(`[VOICE REPLY SENT] ${sendJid}`);
+  } catch (err) {
+    console.error('[SEND AUDIO ERROR]', err.response?.data || err.message);
+  }
+}
+
 // ---------------- PERSONA ----------------
 const SYSTEM_PROMPT = `You are Vayu — a sharp, warm, multilingual advisor. You speak whatever the user speaks: English, Hindi, Bengali, Hinglish, or any mix — naturally, without switching unless they do.
 
@@ -404,9 +478,11 @@ async function handleWebhook(body) {
 
   const realJid = senderJid || resolveJid(msg.key);
   const number = jidToNumber(realJid);
+  // LID mode: remoteJid is a LID (@lid), real phone is in body.sender sent by Evo
+  const senderPhone = jidToNumber(body.sender || '');
   const userId = (number && number.length >= 10 && !isLid(realJid))
     ? number
-    : jidToNumber(remoteJid);
+    : (senderPhone && senderPhone.length >= 10 ? senderPhone : jidToNumber(remoteJid));
 
   if (!userId || userId.length < 5) return;
 
@@ -420,7 +496,7 @@ async function handleWebhook(body) {
   const session = phoneSessions.get(userId);
   if (!ALLOWED_NUMBERS.has(userId) && session.instance !== instanceName && Date.now() < session.expiresAt) return;
 
-  // Extract text
+  // Extract text or detect audio
   const m = msg.message || {};
   let text =
     m.conversation ||
@@ -431,8 +507,13 @@ async function handleWebhook(body) {
     m.buttonsResponseMessage?.selectedButtonId ||
     m.listResponseMessage?.title;
 
-  if (!text?.trim()) return;
-  text = text.trim();
+  // Detect voice note / audio message
+  const isAudio = !!(m.audioMessage || m.pttMessage);
+  const audioUrl = isAudio
+    ? `${process.env.EVO_URL}/chat/getBase64FromMediaMessage/${instanceName}`
+    : null;
+
+  if (!text?.trim() && !isAudio) return;
 
   // Check expiry
   const db = await pool.query(
@@ -453,6 +534,71 @@ async function handleWebhook(body) {
 
   // Enqueue per-user — prevents parallel AI calls racing / wasting tokens
   await enqueue(userId, async () => {
+
+    // ---- VOICE NOTE PIPELINE ----
+    if (isAudio) {
+      console.log(`[VOICE] Received audio from userId=${userId}`);
+      // Fetch base64 audio from Evo then transcribe
+      let transcript = null;
+      try {
+        const b64Res = await axios.post(
+          `${process.env.EVO_URL}/chat/getBase64FromMediaMessage/${instanceName}`,
+          { message: msg },
+          { headers: { apikey: process.env.EVO_API_KEY }, timeout: 15000 }
+        );
+        const b64 = b64Res.data?.base64 || b64Res.data?.media;
+        if (b64) {
+          const FormData = require('form-data');
+          const form = new FormData();
+          const audioBuffer = Buffer.from(b64, 'base64');
+          form.append('file', audioBuffer, { filename: 'voice.ogg', contentType: 'audio/ogg' });
+          form.append('model', 'whisper-large-v3-turbo');
+          form.append('response_format', 'text');
+          const keys = getGroqKeys();
+          const key = pickGroqKey(keys);
+          const transcriptRes = await axios.post(
+            'https://api.groq.com/openai/v1/audio/transcriptions',
+            form,
+            { headers: { ...form.getHeaders(), Authorization: `Bearer ${key}` }, timeout: 30000 }
+          );
+          transcript = typeof transcriptRes.data === 'string'
+            ? transcriptRes.data.trim()
+            : transcriptRes.data?.text?.trim();
+          console.log(`[VOICE→TEXT] "${transcript}"`);
+        }
+      } catch (err) {
+        console.error('[TRANSCRIBE ERROR]', err.response?.data || err.message);
+      }
+
+      if (!transcript) {
+        // Transcription failed — tell user in text
+        await axios.post(
+          `${process.env.EVO_URL}/message/sendText/${instanceName}`,
+          { number: sendJid, text: 'Yaar audio clear nahi tha 😅 — text mein bhej!' },
+          { headers: { apikey: process.env.EVO_API_KEY }, timeout: 10000 }
+        );
+        return;
+      }
+
+      // Get AI reply for transcribed text
+      const aiReply = await askAI(userId, `[Voice message]: ${transcript}`);
+
+      // Try TTS → send as voice note; fall back to text if TTS fails
+      const audioReplyBuffer = await textToSpeech(aiReply);
+      if (audioReplyBuffer) {
+        await sendAudioReply(instanceName, sendJid, audioReplyBuffer);
+      } else {
+        await axios.post(
+          `${process.env.EVO_URL}/message/sendText/${instanceName}`,
+          { number: sendJid, text: aiReply },
+          { headers: { apikey: process.env.EVO_API_KEY }, timeout: 10000 }
+        );
+      }
+      return;
+    }
+
+    // ---- TEXT PIPELINE (unchanged) ----
+    text = text.trim();
     const reply = await askAI(userId, text);
     await axios.post(
       `${process.env.EVO_URL}/message/sendText/${instanceName}`,
