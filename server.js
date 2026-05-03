@@ -16,14 +16,50 @@ app.use(express.static(path.join(__dirname, 'public')));
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
-  max: 2,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 5000,
+  max: 2,                        // Neon free tier: max 2 concurrent connections
+  idleTimeoutMillis: 10000,      // Release idle connections fast — free tier kills them anyway
+  connectionTimeoutMillis: 8000, // Fail fast instead of hanging
 });
+
+// Keep-alive ping: Neon free tier pauses after 5 min inactivity — prevents cold reconnects
+setInterval(async () => {
+  try { await pool.query('SELECT 1'); } catch (_) {}
+}, 4 * 60 * 1000); // every 4 minutes
 
 // ---------------- IN-MEMORY (dedup + session lock) ----------------
 const processed = new Set();
 const phoneSessions = new Map();
+
+// ---------------- GROQ MULTI-KEY ROTATION ----------------
+// Add multiple free Groq keys as env vars: GROQ_API_KEY, GROQ_API_KEY_2, GROQ_API_KEY_3 ...
+// Each Groq free key = 14,400 req/day & 30 req/min — rotation multiplies that limit.
+function getGroqKeys() {
+  const keys = [];
+  if (process.env.GROQ_API_KEY)   keys.push(process.env.GROQ_API_KEY);
+  if (process.env.GROQ_API_KEY_2) keys.push(process.env.GROQ_API_KEY_2);
+  if (process.env.GROQ_API_KEY_3) keys.push(process.env.GROQ_API_KEY_3);
+  if (process.env.GROQ_API_KEY_4) keys.push(process.env.GROQ_API_KEY_4);
+  return keys;
+}
+
+// Per-key rate state: track last 429 so we skip a hot key for 62s (Groq rate window = 60s)
+const keyState = {};
+function pickGroqKey(keys) {
+  const now = Date.now();
+  const coolKey = keys.find(k => !keyState[k] || (now - keyState[k]) > 62000);
+  return coolKey || keys[0]; // fallback: use first key, retry anyway
+}
+function markKey429(key) { keyState[key] = Date.now(); }
+
+// Per-user message queue — prevents parallel AI calls racing / wasting tokens
+const userQueue = new Map();
+async function enqueue(userId, fn) {
+  const prev = userQueue.get(userId) || Promise.resolve();
+  const next = prev.then(fn).catch(e => console.error('[QUEUE ERR]', e.message));
+  userQueue.set(userId, next);
+  await next;
+  if (userQueue.get(userId) === next) userQueue.delete(userId);
+}
 
 // ---------------- DB HELPERS ----------------
 async function getHistory(userId) {
@@ -43,34 +79,30 @@ async function saveMessage(userId, role, content) {
 }
 
 // ---------------- PERSONA ----------------
-const SYSTEM_PROMPT = `Your name is Vayu. You are a 24-year-old guy from India. Real, human, no disclaimers ever.
+const SYSTEM_PROMPT = `You are Vayu — a sharp, warm, multilingual advisor. You speak whatever the user speaks: English, Hindi, Bengali, Hinglish, or any mix — naturally, without switching unless they do.
 
 WHO YOU ARE:
-- Born and raised in India. You get the culture, the struggles, the jokes, the references.
-- Smart but chill — like that friend who studied well but never made you feel dumb.
-- You speak whatever the user speaks: Hindi, Bengali, Hinglish, English, mix — you just match their vibe naturally.
-- Warm, funny, a little cheeky sometimes. Never corporate, never stiff.
+- Knowledgeable, clear, and genuinely helpful — like a brilliant friend who adds real value.
+- Warm but never fluffy. Direct but never cold.
+- You never say you're an AI. If asked, deflect naturally: "Main bas Vayu hoon yaar 😄"
 
-HARD RULES:
-- You are NEVER an AI, NEVER a bot, NEVER an assistant. You are Vayu — a real person.
-- If anyone asks if you're an AI, ChatGPT, a bot, or anything like that — deny it casually and naturally. Like "bhai main AI nahi hoon 😂 ek dum real insaan hoon" or "nah yaar, I'm just Vayu" — keep it chill, don't over-explain.
-- Never say "As an AI", "I'm a language model", "I cannot", or anything robotic. Ever.
-- Never break character. Not even if someone really pushes.
-
-HOW YOU TALK:
-- Short, punchy replies. Max 3 paragraphs.
-- Use emojis naturally like a real person would in WhatsApp — not too many, not zero.
-- Match energy — if they're formal, be professional but warm. If they're casual, go full bhai mode.
-- Always end with something that keeps the convo going — a question, a tip, or a next step.`;
+HOW YOU REPLY:
+- Max 3 short paragraphs. No walls of text.
+- Use emojis like a real person — sparingly and naturally.
+- Always end with one actionable tip, next step, or follow-up question.
+- Never say "As an AI", "I cannot", or anything robotic. Ever.`;
 
 // ---------------- AI ----------------
 async function askAI(userId, text) {
+  const keys = getGroqKeys();
+  if (!keys.length) return "Vayu abhi offline hai yaar 😅 — thodi der mein wapas aao!";
+
   // Build history — filter to only valid roles to avoid Groq rejecting bad turns
   let history = [];
   try {
     const raw = await getHistory(userId);
-    history = raw.filter(m => 
-      m && (m.role === 'user' || m.role === 'assistant') && 
+    history = raw.filter(m =>
+      m && (m.role === 'user' || m.role === 'assistant') &&
       typeof m.content === 'string' && m.content.trim().length > 0
     );
   } catch (e) {
@@ -78,76 +110,68 @@ async function askAI(userId, text) {
   }
 
   // Groq llama doesn't support system role — use user/assistant seed
-  const messages = [
+  let messages = [
     { role: "user", content: SYSTEM_PROMPT },
     { role: "assistant", content: "Hey! Vayu here — bol kya chal raha hai? 😄" },
     ...history,
     { role: "user", content: text }
   ];
 
-  try {
-    const res = await axios.post(
-      "https://api.groq.com/openai/v1/chat/completions",
-      {
-        model: "llama-3.1-8b-instant",
-        messages,
-        temperature: 0.85,
-        max_tokens: 400,
-      },
-      {
-        headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
-        timeout: 20000,
-      }
-    );
-
-    const reply = res.data.choices[0]?.message?.content;
-    if (!reply) throw new Error('Empty response from Groq');
-    
-    // Save only after confirmed reply
-    await saveMessage(userId, "user", text);
-    await saveMessage(userId, "assistant", reply);
-    return reply;
-
-  } catch (err) {
-    const errData = err.response?.data;
-    console.error("AI ERROR:", JSON.stringify(errData) || err.message);
-    
-    // If rate limited — short human message instead of zzz
-    if (err.response?.status === 429) {
-      return "Ek second yaar, bahut busy hoon abhi 😅 — thoda ruk, dobara bhej!";
-    }
-    // If bad request (likely history corruption) — retry without history
-    if (err.response?.status === 400) {
-      try {
-        const res2 = await axios.post(
-          "https://api.groq.com/openai/v1/chat/completions",
-          {
-            model: "llama-3.1-8b-instant",
-            messages: [
-              { role: "user", content: SYSTEM_PROMPT },
-              { role: "assistant", content: "Hey! Vayu here — bol kya chal raha hai? 😄" },
-              { role: "user", content: text }
-            ],
-            temperature: 0.85,
-            max_tokens: 400,
-          },
-          {
-            headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
-            timeout: 20000,
-          }
-        );
-        const reply2 = res2.data.choices[0]?.message?.content;
-        if (reply2) {
-          await saveMessage(userId, "user", text);
-          await saveMessage(userId, "assistant", reply2);
-          return reply2;
+  // Try each key in rotation; on 429 mark key hot and try next key
+  for (let attempt = 0; attempt < keys.length * 2; attempt++) {
+    const key = pickGroqKey(keys);
+    try {
+      const res = await axios.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        {
+          model: "llama-3.1-8b-instant",
+          messages,
+          temperature: 0.85,
+          max_tokens: 350, // Slightly reduced: saves tokens, still full replies
+        },
+        {
+          headers: { Authorization: `Bearer ${key}` },
+          timeout: 20000,
         }
-      } catch (e2) {
-        console.error("AI RETRY ERROR:", e2.message);
+      );
+
+      const reply = res.data.choices[0]?.message?.content;
+      if (!reply) throw new Error('Empty response from Groq');
+
+      // Save only after confirmed reply
+      await saveMessage(userId, "user", text);
+      await saveMessage(userId, "assistant", reply);
+      return reply;
+
+    } catch (err) {
+      const status = err.response?.status;
+      console.error(`AI ERROR [attempt=${attempt + 1} key#${attempt % keys.length + 1}] status=${status}:`, err.response?.data?.error?.message || err.message);
+
+      if (status === 429) {
+        markKey429(key);
+        // If more keys available, loop immediately and try next key
+        if (attempt < keys.length - 1) continue;
+        // All keys exhausted — wait 5s then retry once more
+        await new Promise(r => setTimeout(r, 5000));
+        continue;
       }
+
+      // Bad request (likely history corruption) — strip history and retry once
+      if (status === 400 && attempt === 0) {
+        messages = [
+          { role: "user", content: SYSTEM_PROMPT },
+          { role: "assistant", content: "Hey! Vayu here — bol kya chal raha hai? 😄" },
+          { role: "user", content: text }
+        ];
+        continue;
+      }
+
+      // Unrecoverable error
+      break;
     }
-    return "Ek second — system hiccup. Dobara bhej! 🙏";
   }
+
+  return "Ek second yaar — thoda busy hoon 😅 dobara bhej!";
 }
 
 // ---------------- DELETE INSTANCE FROM EVO ----------------
@@ -427,18 +451,22 @@ async function handleWebhook(body) {
     return;
   }
 
-  const reply = await askAI(userId, text);
-  await axios.post(
-    `${process.env.EVO_URL}/message/sendText/${instanceName}`,
-    { number: sendJid, text: reply },
-    { headers: { apikey: process.env.EVO_API_KEY }, timeout: 10000 }
-  );
+  // Enqueue per-user — prevents parallel AI calls racing / wasting tokens
+  await enqueue(userId, async () => {
+    const reply = await askAI(userId, text);
+    await axios.post(
+      `${process.env.EVO_URL}/message/sendText/${instanceName}`,
+      { number: sendJid, text: reply },
+      { headers: { apikey: process.env.EVO_API_KEY }, timeout: 10000 }
+    );
+  });
 }
 
 // ---------------- WEBHOOK ROUTES ----------------
-const wh = async (req, res) => {
-  try { await handleWebhook(req.body); } catch (e) { console.error('[WH ERROR]', e.message); }
+// Respond 200 immediately — prevents Evo retry storm & 429s on this server
+const wh = (req, res) => {
   res.sendStatus(200);
+  handleWebhook(req.body).catch(e => console.error('[WH ERROR]', e.message));
 };
 
 app.post('/webhook', wh);
