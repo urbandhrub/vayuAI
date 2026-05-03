@@ -107,24 +107,22 @@ async function transcribeAudio(audioUrl) {
   }
 }
 
-// Text-to-speech via edge-tts (Microsoft free TTS, no API key needed)
-// Install once on server: pip install edge-tts --break-system-packages
+// Text-to-speech via msedge-tts (pure Node.js, Microsoft free TTS, zero extra install needed)
 async function textToSpeech(text) {
   try {
-    const { execFile } = require('child_process');
-    const fs = require('fs');
-    const os = require('os');
-    const tmpFile = `${os.tmpdir()}/vayu_${Date.now()}.mp3`;
+    const { MsEdgeTTS, OUTPUT_FORMAT } = require('msedge-tts');
+    const tts = new MsEdgeTTS();
+    await tts.setMetadata('hi-IN-MadhurNeural', OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
+    const chunks = [];
     await new Promise((resolve, reject) => {
-      execFile('edge-tts',
-        ['--voice', 'hi-IN-MadhurNeural', '--text', text, '--write-media', tmpFile],
-        { timeout: 20000 },
-        (err) => err ? reject(err) : resolve()
-      );
+      const readable = tts.toStream(text);
+      readable.on('data', chunk => chunks.push(chunk));
+      readable.on('end', resolve);
+      readable.on('error', reject);
     });
-    const buffer = fs.readFileSync(tmpFile);
-    fs.unlink(tmpFile, () => {});
-    return buffer;
+    const buffer = Buffer.concat(chunks);
+    console.log('[TTS] Generated ' + buffer.length + ' bytes');
+    return buffer.length > 0 ? buffer : null;
   } catch (err) {
     console.error('[TTS ERROR]', err.message);
     return null;
