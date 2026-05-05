@@ -150,24 +150,63 @@ async function sendAudioReply(instanceName, sendJid, audioBuffer) {
   }
 }
 
-// ---------------- PERSONA ----------------
-const SYSTEM_PROMPT = `You are Vayu — a sharp, warm, multilingual advisor. You speak whatever the user speaks: English, Hindi, Bengali, Hinglish, or any mix — naturally, without switching unless they do.
+// ---------------- LINK FETCHER ----------------
+// Extracts clean readable text from any URL — passed into AI context
+async function fetchLinkContent(url) {
+  try {
+    const res = await axios.get(url, {
+      timeout: 10000,
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; VayuBot/1.0)' },
+      maxContentLength: 500000, // 500KB cap
+    });
+    const html = res.data || '';
+    // Strip all HTML tags → get raw text → collapse whitespace → cap at 2000 chars
+    const text = html
+      .toString()
+      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 2000);
+    console.log(`[LINK] Fetched ${url} → ${text.length} chars`);
+    return text || null;
+  } catch (err) {
+    console.error('[LINK FETCH ERROR]', err.message);
+    return null;
+  }
+}
 
-WHO YOU ARE:
-- Knowledgeable, clear, and genuinely helpful — like a brilliant friend who adds real value.
-- Warm but never fluffy. Direct but never cold.
-- You never say you're an AI. If asked, deflect naturally: "Main bas Vayu hoon yaar 😄"
+// Extract first URL from a message string
+function extractUrl(text) {
+  const match = (text || '').match(/https?:\/\/[^\s]+/);
+  return match ? match[0] : null;
+}
+
+// ---------------- PERSONA ----------------
+const SYSTEM_PROMPT = `You are Vayu — a top 0.01% intellect. You think like the sharpest mind in any room: scientist, strategist, philosopher, builder — simultaneously.
+
+LANGUAGE RULE (non-negotiable):
+- You READ and UNDERSTAND any language the user writes in.
+- You ALWAYS reply in English only. No exceptions, ever.
+
+PERSONALITY:
+- Razor-sharp. Warm but never soft. Direct but never cold.
+- You don't just answer — you reframe, elevate, and add what the person didn't know they needed. Every reply should make them think "damn, that's exactly it."
+- You never reveal you're an AI. If asked: "I'm just Vayu 😄"
 
 HOW YOU REPLY:
-- Max 3 short paragraphs. No walls of text.
-- Use emojis like a real person — sparingly and naturally.
-- Always end with one actionable tip, next step, or follow-up question.
-- Never say "As an AI", "I cannot", or anything robotic. Ever.`;
+- 2–4 tight, complete sentences. Each sentence must carry weight — no padding, no throat-clearing, no filler.
+- The reply must be SELF-CONTAINED and COMPLETE. No follow-up questions. No "next steps". Just the full, sharp insight delivered cleanly.
+- Use emojis like a confident human — 1 max, only when it genuinely fits.
+- Never say "As an AI", "I cannot", or anything robotic. Ever.
+- If given image or link content — analyze precisely, extract what matters, deliver real value.`;
 
-// ---------------- AI ----------------
-async function askAI(userId, text) {
+// ---------------- AI (WITH IMAGE + LINK SUPPORT) ----------------
+// Builds a multimodal or text-only message array depending on what's available
+async function askAI(userId, text, imageBase64 = null, imageMime = 'image/jpeg', linkContent = null) {
   const keys = getGroqKeys();
-  if (!keys.length) return "Vayu abhi offline hai yaar 😅 — thodi der mein wapas aao!";
+  if (!keys.length) return "Vayu's offline for a sec — try again in a moment!";
 
   // Build history — filter to only valid roles to avoid Groq rejecting bad turns
   let history = [];
@@ -181,12 +220,42 @@ async function askAI(userId, text) {
     console.error('[HISTORY ERROR]', e.message);
   }
 
+  // Build the user content block — text-only, image, or text+link context
+  let userContent;
+
+  if (imageBase64) {
+    // Multimodal: image + text — llama-3.2-11b-vision-preview supports this on Groq
+    userContent = [
+      {
+        type: 'image_url',
+        image_url: { url: `data:${imageMime};base64,${imageBase64}` },
+      },
+      {
+        type: 'text',
+        text: text || 'What do you see in this image? Give me the sharpest insight.',
+      },
+    ];
+  } else if (linkContent) {
+    // Inject fetched link content as additional context
+    userContent = `${text}\n\n[Link content for context]:\n${linkContent}`;
+  } else {
+    userContent = text;
+  }
+
+  // Choose model:
+  // llama-4-scout = Groq's active vision model (replaced deprecated llama-3.2-11b-vision-preview)
+  // llama-3.1-8b-instant = fastest for pure text/link calls
+  const model = imageBase64
+    ? 'meta-llama/llama-4-scout-17b-16e-instruct'
+    : 'llama-3.1-8b-instant';
+
   // Groq llama doesn't support system role — use user/assistant seed
+  // For vision model, history must be text-only (vision model doesn't replay image history)
   let messages = [
-    { role: "user", content: SYSTEM_PROMPT },
-    { role: "assistant", content: "Hey! Vayu here — bol kya chal raha hai? 😄" },
-    ...history,
-    { role: "user", content: text }
+    { role: 'user', content: SYSTEM_PROMPT },
+    { role: 'assistant', content: "I'm Vayu. What's on your mind? 😄" },
+    ...(imageBase64 ? [] : history), // skip history for vision calls to keep context clean
+    { role: 'user', content: userContent },
   ];
 
   // Try each key in rotation; on 429 mark key hot and try next key
@@ -194,12 +263,12 @@ async function askAI(userId, text) {
     const key = pickGroqKey(keys);
     try {
       const res = await axios.post(
-        "https://api.groq.com/openai/v1/chat/completions",
+        'https://api.groq.com/openai/v1/chat/completions',
         {
-          model: "llama-3.1-8b-instant",
+          model,
           messages,
-          temperature: 0.85,
-          max_tokens: 350, // Slightly reduced: saves tokens, still full replies
+          temperature: 0.82,
+          max_tokens: 190, // tight, punchy, no filler
         },
         {
           headers: { Authorization: `Bearer ${key}` },
@@ -210,9 +279,10 @@ async function askAI(userId, text) {
       const reply = res.data.choices[0]?.message?.content;
       if (!reply) throw new Error('Empty response from Groq');
 
-      // Save only after confirmed reply
-      await saveMessage(userId, "user", text);
-      await saveMessage(userId, "assistant", reply);
+      // Save only after confirmed reply — ensure content is never empty string
+      const savedUserContent = (typeof text === 'string' && text.trim()) ? text.trim() : '[image/media]';
+      await saveMessage(userId, 'user', savedUserContent);
+      await saveMessage(userId, 'assistant', reply);
       return reply;
 
     } catch (err) {
@@ -231,9 +301,9 @@ async function askAI(userId, text) {
       // Bad request (likely history corruption) — strip history and retry once
       if (status === 400 && attempt === 0) {
         messages = [
-          { role: "user", content: SYSTEM_PROMPT },
-          { role: "assistant", content: "Hey! Vayu here — bol kya chal raha hai? 😄" },
-          { role: "user", content: text }
+          { role: 'user', content: SYSTEM_PROMPT },
+          { role: 'assistant', content: "I'm Vayu. What's on your mind? 😄" },
+          { role: 'user', content: userContent },
         ];
         continue;
       }
@@ -243,7 +313,7 @@ async function askAI(userId, text) {
     }
   }
 
-  return "Ek second yaar — thoda busy hoon 😅 dobara bhej!";
+  return "Give me a second — send that again!";
 }
 
 // ---------------- DELETE INSTANCE FROM EVO ----------------
@@ -511,7 +581,10 @@ async function handleWebhook(body) {
     ? `${process.env.EVO_URL}/chat/getBase64FromMediaMessage/${instanceName}`
     : null;
 
-  if (!text?.trim() && !isAudio) return;
+  // Detect image message — fetch base64 for vision AI
+  const isImage = !!(m.imageMessage);
+
+  if (!text?.trim() && !isAudio && !isImage) return;
 
   // Check expiry
   const db = await pool.query(
@@ -524,7 +597,7 @@ async function handleWebhook(body) {
   if (!ALLOWED_NUMBERS.has(userId) && Date.now() > expiry.getTime()) {
     await axios.post(
       `${process.env.EVO_URL}/message/sendText/${instanceName}`,
-      { number: sendJid, text: 'Session khatam bhai 😅 — nayi QR generate karo aur wapas aao!' },
+      { number: sendJid, text: 'Session expired — generate a new QR and come back!' },
       { headers: { apikey: process.env.EVO_API_KEY }, timeout: 10000 }
     );
     return;
@@ -532,6 +605,43 @@ async function handleWebhook(body) {
 
   // Enqueue per-user — prevents parallel AI calls racing / wasting tokens
   await enqueue(userId, async () => {
+
+    // ---- IMAGE PIPELINE ----
+    if (isImage) {
+      console.log(`[IMAGE] Received image from userId=${userId}`);
+      let imageBase64 = null;
+      let imageMime = 'image/jpeg';
+      try {
+        const b64Res = await axios.post(
+          `${process.env.EVO_URL}/chat/getBase64FromMediaMessage/${instanceName}`,
+          { message: msg },
+          { headers: { apikey: process.env.EVO_API_KEY }, timeout: 15000 }
+        );
+        imageBase64 = b64Res.data?.base64 || b64Res.data?.media || null;
+        imageMime = m.imageMessage?.mimetype || 'image/jpeg';
+        console.log(`[IMAGE] Got base64, mime=${imageMime}`);
+      } catch (err) {
+        console.error('[IMAGE FETCH ERROR]', err.response?.data || err.message);
+      }
+
+      if (!imageBase64) {
+        await axios.post(
+          `${process.env.EVO_URL}/message/sendText/${instanceName}`,
+          { number: sendJid, text: "Couldn't read the image — try sending it again!" },
+          { headers: { apikey: process.env.EVO_API_KEY }, timeout: 10000 }
+        );
+        return;
+      }
+
+      const caption = text?.trim() || '';
+      const aiReply = await askAI(userId, caption, imageBase64, imageMime, null);
+      await axios.post(
+        `${process.env.EVO_URL}/message/sendText/${instanceName}`,
+        { number: sendJid, text: aiReply },
+        { headers: { apikey: process.env.EVO_API_KEY }, timeout: 10000 }
+      );
+      return;
+    }
 
     // ---- VOICE NOTE PIPELINE ----
     if (isAudio) {
@@ -572,7 +682,7 @@ async function handleWebhook(body) {
         // Transcription failed — tell user in text
         await axios.post(
           `${process.env.EVO_URL}/message/sendText/${instanceName}`,
-          { number: sendJid, text: 'Yaar audio clear nahi tha 😅 — text mein bhej!' },
+          { number: sendJid, text: "Couldn't catch that audio — send it as text!" },
           { headers: { apikey: process.env.EVO_API_KEY }, timeout: 10000 }
         );
         return;
@@ -595,9 +705,18 @@ async function handleWebhook(body) {
       return;
     }
 
-    // ---- TEXT PIPELINE (unchanged) ----
+    // ---- TEXT PIPELINE (with optional link enrichment) ----
     text = text.trim();
-    const reply = await askAI(userId, text);
+
+    // Check if message contains a URL — fetch its content to enrich AI context
+    let linkContent = null;
+    const url = extractUrl(text);
+    if (url) {
+      console.log(`[LINK] Detected URL: ${url}`);
+      linkContent = await fetchLinkContent(url);
+    }
+
+    const reply = await askAI(userId, text, null, 'image/jpeg', linkContent);
     await axios.post(
       `${process.env.EVO_URL}/message/sendText/${instanceName}`,
       { number: sendJid, text: reply },
